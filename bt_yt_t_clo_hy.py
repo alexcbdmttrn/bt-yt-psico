@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 BT_YT_T_CLO_HY - Bot Horóscopo Master (Tu Cielo Hoy) - VERSIÓN ELITE 2026
-Fix aplicado: KeyError 'MODO' corregido en construir_prompt.
+Con protección anti-duplicados: solo 1 video por día aunque el workflow corra múltiples veces.
 """
 import asyncio, base64, bisect, json, os, random, re, ssl, socket, sys, time, traceback, unicodedata, subprocess
 from datetime import datetime, timedelta, timezone
@@ -99,7 +99,7 @@ def construir_hashtags(tema="general"):
     return f"#Horoscopo #Astrologia #Zodiaco #TuCieloHoy #MensajeDelUniverso #HoroscopoDeHoy {especifico}"
 
 print("=" * 70)
-print("🔮 BT_YT_T_CLO_HY MASTER - ELITE 2026 (2s intro + 5 títulos + persistencia)")
+print("🔮 BT_YT_T_CLO_HY MASTER - ELITE 2026 (anti-duplicados + 2s intro)")
 print(f"📅 {datetime.now(TZ):%Y-%m-%d %H:%M} (CDMX)")
 print("=" * 70)
 
@@ -124,14 +124,26 @@ def guardar_json(ruta, data):
     os.replace(tmp, ruta)
 
 def titulo_ya_publicado(titulo):
-    data = cargar_json(TITULOS_FILE, {"titulos": []})
+    data = cargar_json(TITULOS_FILE, {"titulos": [], "ultima_fecha": ""})
     n = titulo.lower().strip()
     return any(n == t.lower().strip() for t in data["titulos"])
 
 def guardar_titulo(titulo):
-    data = cargar_json(TITULOS_FILE, {"titulos": []})
+    data = cargar_json(TITULOS_FILE, {"titulos": [], "ultima_fecha": ""})
     if titulo not in data["titulos"]:
         data["titulos"].append(titulo)
+    guardar_json(TITULOS_FILE, data)
+
+def ya_publique_hoy():
+    """Devuelve True si ya se publicó un video hoy (según CDMX)."""
+    data = cargar_json(TITULOS_FILE, {"titulos": [], "ultima_fecha": ""})
+    hoy = datetime.now(TZ).strftime("%Y-%m-%d")
+    return data.get("ultima_fecha") == hoy
+
+def marcar_publicado_hoy():
+    """Marca la fecha actual como el último día de publicación."""
+    data = cargar_json(TITULOS_FILE, {"titulos": [], "ultima_fecha": ""})
+    data["ultima_fecha"] = datetime.now(TZ).strftime("%Y-%m-%d")
     guardar_json(TITULOS_FILE, data)
 
 def hacer_commit_titulos():
@@ -279,7 +291,6 @@ Responde SOLO JSON con este formato exacto:
 def construir_prompt(modo, fecha, fase_lunar):
     modo_label = {"daily": "DIARIO", "weekly": "SEMANAL", "monthly": "MENSUAL"}[modo]
     palabras = {"daily": "90-110", "weekly": "150-180", "monthly": "250-300"}[modo]
-    # FIX: pasar tanto 'modo' como 'MODO' para que str.format() no falle
     prompt = PROMPT_BASE.format(
         fecha=fecha, fase_lunar=fase_lunar,
         modo=modo_label, MODO=modo_label
@@ -770,6 +781,11 @@ def main():
         
         print(f"🤖 Modo: {tipo.upper()}")
         
+        # ✅ CHECK ANTI-DUPLICADOS: 1 solo video por día
+        if ya_publique_hoy():
+            print("⚠️ Ya se publicó un video hoy. Saltando ejecución.")
+            return
+        
         hora_final = calcular_hora_publicacion(ahora, tipo)
         hora_utc = hora_final.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
         print(f"🎯 Programado: {hora_final:%d-%m-%Y %H:%M} (CDMX)")
@@ -810,7 +826,9 @@ def main():
         
         print(f"✨ ¡COMPLETADO! Programado para {hora_final:%H:%M}")
         
+        # ✅ MARCAR FECHA + COMMIT (persistencia anti-duplicados)
         guardar_titulo(datos["titulo"])
+        marcar_publicado_hoy()
         hacer_commit_titulos()
         
         for f in os.listdir():
