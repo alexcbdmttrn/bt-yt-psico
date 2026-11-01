@@ -2,22 +2,7 @@
 """
 BT_YT_SHORTS_CLO_HY - Bot Shorts Horóscopo (Tu Cielo Hoy) - VERSIÓN PREMIUM ELITE 2026
 ============================================================================
-NOVEDADES vs versión anterior:
-- INTRO de 2s con música + micro-zoom (antes de la narración)
-- Voz fija por elemento (fuego/tierra/aire/agua)
-- Música por elemento + volumen 12% (antes 8% random)
-- 5 títulos candidatos con scorer local (longitud, signo, trigger, emoji)
-- Descripción en 3 capas (hook 125 + keywords + CTA)
-- Hook rotado (5 estructuras con información-gap)
-- Tags reducidos a 10-12 hiper-específicos
-- Hashtags rotados por tema (dinero/amor/alerta/general)
-- Intro teaser de 2-3 palabras en los 2 primeros segundos
-- Scheduling inteligente (nunca programa a las 2 AM)
-- Fix PLACEHOLDER (no inyecta URL rota si no hay video largo)
-- Fix Image.open por frame (carga una sola vez)
-- Fix _VIG (viñeta cacheada)
-- Cloudflare con backoff exponencial
-- Fix bg.duration == 0
+Motor de tags SEO por niveles (Short/Mid/Long-tail) nivel VidIQ + intro 2s + voz/música por elemento.
 """
 import asyncio, base64, json, os, random, re, ssl, socket, sys, time, traceback, unicodedata, subprocess
 from datetime import datetime, timedelta, timezone
@@ -47,9 +32,8 @@ REPO_NAME = os.getenv("GITHUB_REPOSITORY", "")
 
 CANAL_LINK = "https://www.youtube.com/@tucielhoy"
 MAX_SHORTS_DIARIOS = 3
-INTRO_DUR = 2.0  # segundos de música antes de la narración
+INTRO_DUR = 2.0
 
-# Voz + rate por elemento (consistencia de marca)
 VOICE_CONFIG = {
     "fuego": ("es-MX-DaliaNeural", "+2%"),
     "tierra": ("es-AR-ElenaNeural", "-2%"),
@@ -57,7 +41,6 @@ VOICE_CONFIG = {
     "agua": ("es-ES-ElviraNeural", "-4%"),
 }
 
-# Música por elemento (fallback a cualquier mp3 si no existe)
 MUSIC_BY_ELEMENT = {
     "fuego": "Astral Zenith.mp3",
     "tierra": "Sylvan Sanctuary.mp3",
@@ -97,55 +80,45 @@ ELEMENT_STYLES = {
     "agua": {"text_color": (138, 43, 226), "stroke_color": (0, 255, 255), "mantra_color": (0, 255, 255)}
 }
 
-HASHTAGS_BY_THEME = {
-    "dinero": "#dinero #abundancia #prosperidad",
-    "amor": "#amor #pareja #almaGemela",
-    "alerta": "#alerta #universo #señales",
-    "general": "#energia #universo #destino",
-}
+# ================================================================
+# 🏷️ NUEVO MOTOR DE TAGS SEO (Nivel VidIQ)
+# ================================================================
+# Short-Tail: alto volumen, alta competencia
+SHORT_TAIL_KEYWORDS = [
+    "horoscopo", "astrologia", "zodiaco", "tarot", "signos zodiacales", "predicciones"
+]
+
+# LSI: contexto semántico (se añaden dinámicamente)
+LSI_KEYWORDS = [
+    "amor", "dinero", "suerte", "destino", "energia", "espiritualidad",
+    "mensaje del universo", "señales del universo", "ley de atraccion",
+    "abundancia", "exito", "pareja", "alma gemela", "prosperidad"
+]
+
+# Long-Tail: baja competencia, alta intención (con {signo})
+LONG_TAIL_TEMPLATES = [
+    "horoscopo {signo} hoy",
+    "{signo} hoy",
+    "prediccion {signo}",
+    "horoscopo diario para {signo}",
+    "que le espera a {signo} hoy",
+    "{signo} amor",
+    "{signo} dinero",
+    "{signo} suerte",
+    "mensaje del universo {signo}",
+    "tarot {signo}",
+    "{signo} 2026",
+    "horoscopo semanal {signo}",
+    "horoscopo mensual {signo}",
+    "signo {signo} hoy",
+]
 
 def normalizar_ascii(texto):
     texto = unicodedata.normalize('NFKD', texto)
     texto = ''.join(c for c in texto if not unicodedata.combining(c))
     return texto.lower()
 
-def construir_tags_shorts_premium(signo, tema="general"):
-    """Tags hiper-específicos (10-12) enfocados en búsqueda exacta."""
-    signo_norm = normalizar_ascii(signo["nombre"])
-    
-    tags = [
-        f"horoscopo {signo_norm} hoy",
-        f"{signo_norm} hoy",
-        f"prediccion {signo_norm}",
-        f"horoscopo diario para {signo_norm}",
-        f"mensaje del universo {signo_norm}",
-        f"astrologia {signo_norm}",
-        f"{signo_norm} {tema}" if tema != "general" else f"{signo_norm} diario",
-        f"que le espera a {signo_norm} hoy",
-        "señales del universo",
-        "shorts horoscopo",
-        f"{signo_norm} 2026",
-    ]
-    
-    result, total = [], 0
-    for tag in tags:
-        clean = re.sub(r'[^a-z0-9\sáéíóúñ]', '', tag.lower()).strip()
-        if 3 <= len(clean) <= 30 and clean not in result:
-            if total + len(clean) + 1 <= 480:
-                result.append(clean)
-                total += len(clean) + 1
-    
-    print(f"   🏷️ Tags: {len(result)} tags, {total}/480 chars")
-    return result
-
-def construir_hashtags(signo, tema="general"):
-    """Hashtags rotados por tema (3-5 máximo)."""
-    signo_norm = normalizar_ascii(signo["nombre"])
-    especifico = HASHTAGS_BY_THEME.get(tema, HASHTAGS_BY_THEME["general"])
-    return f"#{signo_norm} #horoscopo #astrologia #shorts {especifico}"
-
 def detectar_tema(datos):
-    """Devuelve el tema: dinero|amor|alerta|general."""
     tema = datos.get("tema")
     if tema in ["dinero", "amor", "alerta", "general"]:
         return tema
@@ -158,8 +131,67 @@ def detectar_tema(datos):
         return "alerta"
     return "general"
 
+def construir_tags_shorts_premium(signo, tema="general"):
+    """
+    Construye lista balanceada: Short-Tail + Long-Tail + Medium-Tail + LSI.
+    Respeta límite 450 chars de YouTube.
+    """
+    signo_norm = normalizar_ascii(signo["nombre"])
+    tags_set = set()
+    
+    # 1. Short-Tail (alto volumen)
+    for kw in SHORT_TAIL_KEYWORDS:
+        if len(kw) <= 30:
+            tags_set.add(kw)
+    
+    # 2. Long-Tail (con signo, alta intención)
+    for template in LONG_TAIL_TEMPLATES:
+        tag = template.format(signo=signo_norm)
+        if len(tag) <= 30:
+            tags_set.add(tag)
+    
+    # 3. Medium-Tail por tema
+    if tema != "general":
+        tags_set.add(f"{signo_norm} {tema}")
+        tags_set.add(f"horoscopo {signo_norm} {tema}")
+    
+    # 4. LSI (muestra aleatoria de 6)
+    for kw in random.sample(LSI_KEYWORDS, min(6, len(LSI_KEYWORDS))):
+        if len(kw) <= 30:
+            tags_set.add(kw)
+    
+    # 5. Limpiar + respetar 450 chars (priorizando long-tail por ser más específicas)
+    tags_finales, total = [], 0
+    sorted_tags = sorted(list(tags_set), key=len, reverse=True)
+    
+    for tag in sorted_tags:
+        clean = re.sub(r'[^a-z0-9\s]', '', tag.lower()).strip()
+        clean = re.sub(r'\s+', ' ', clean).strip()
+        if 3 <= len(clean) <= 30 and clean not in tags_finales:
+            if total + len(clean) + 1 <= 450:
+                tags_finales.append(clean)
+                total += len(clean) + 1
+            else:
+                break
+    
+    print(f"   🏷️ Tags: {len(tags_finales)} tags, {total}/450 chars")
+    return tags_finales
+
+def construir_hashtags(signo, tema="general"):
+    """3-5 hashtags rotados por tema (mejor práctica 2026)."""
+    signo_norm = normalizar_ascii(signo["nombre"])
+    base = [f"#{signo_norm}", "#horoscopo", "#shorts"]
+    
+    if tema == "dinero":
+        return " ".join(base + ["#dinero", "#abundancia"])
+    elif tema == "amor":
+        return " ".join(base + ["#amor", "#pareja"])
+    elif tema == "alerta":
+        return " ".join(base + ["#alerta", "#universo"])
+    else:
+        return " ".join(base + ["#astrologia"])
+
 def obtener_musica(elemento):
-    """Devuelve la ruta de la música por elemento, con fallback al pool."""
     preferida = MUSIC_BY_ELEMENT.get(elemento)
     if preferida and os.path.exists(preferida):
         return preferida
@@ -167,7 +199,7 @@ def obtener_musica(elemento):
     return random.choice(musicas) if musicas else None
 
 print("=" * 70)
-print("📱 BT_YT_SHORTS_CLO_HY - ELITE 2026 (2s intro + voz/música por elemento)")
+print("📱 BT_YT_SHORTS_CLO_HY - ELITE 2026 (Motor Tags Nivel VidIQ)")
 print(f"📅 {datetime.now(TZ):%Y-%m-%d %H:%M} (CDMX)")
 print("=" * 70)
 
@@ -329,52 +361,33 @@ Responde SOLO JSON con este formato exacto (llaves dobles para escape):
 """
 
 def seleccionar_mejor_titulo(titulos, signo_nombre):
-    """Scorer local: elige el título con mayor CTR predicho."""
     emojis = ["💰", "🔮", "✨", "💕", "🔥", "⚠️", "🌟"]
     triggers = ["HOY", "hoy", "Nadie", "Señal", "señal", "Alerta", "alerta", "Cambio", "cambio", "ya"]
     
     best_score, best_titulo = -1, ""
-    
     for t in titulos:
         texto = t.get("texto", "") if isinstance(t, dict) else str(t)
-        
         score = 0
         L = len(texto)
-        # Longitud óptima (52-62)
-        if 52 <= L <= 62:
-            score += 30
-        elif 45 <= L <= 68:
-            score += 15
-        # Signo en primeros 20 chars
-        if signo_nombre.lower() in texto[:20].lower():
-            score += 25
-        # Trigger de urgencia
-        if any(trig in texto for trig in triggers):
-            score += 10
-        # Emoji presente
-        if any(e in texto for e in emojis):
-            score += 15
-        # Número en el título (estructura clara)
-        if any(d in texto for d in "0123456789"):
-            score += 5
-        
+        if 52 <= L <= 62: score += 30
+        elif 45 <= L <= 68: score += 15
+        if signo_nombre.lower() in texto[:20].lower(): score += 25
+        if any(trig in texto for trig in triggers): score += 10
+        if any(e in texto for e in emojis): score += 15
+        if any(d in texto for d in "0123456789"): score += 5
         if score > best_score:
             best_score = score
             best_titulo = texto
     
     if not best_titulo:
         best_titulo = titulos[0].get("texto", "") if isinstance(titulos[0], dict) else str(titulos[0])
-    
-    # Truncar por si acaso
     if len(best_titulo) > 65:
         best_titulo = best_titulo[:62] + "..."
-    
     return best_titulo
 
 def llamar_deepseek_short(signo, fecha, video_largo_id=None):
     prompt = PROMPT_SHORT_SEO.format(
-        fecha=fecha, signo=signo["nombre"], simbolo=signo["simbolo"],
-        elemento=signo["elemento"]
+        fecha=fecha, signo=signo["nombre"], simbolo=signo["simbolo"], elemento=signo["elemento"]
     )
     headers = {"Authorization": f"Bearer {DEEPSEEK_API_KEY}", "Content-Type": "application/json"}
     payload = {"model": "deepseek-chat", "messages": [{"role": "user", "content": prompt}],
@@ -391,17 +404,13 @@ def llamar_deepseek_short(signo, fecha, video_largo_id=None):
             i_json, j_json = t.find("{"), t.rfind("}")
             datos = json.loads(t[i_json:j_json + 1], strict=False)
             
-            # Compatibilidad con formato viejo
             if "titulos" not in datos and "titulo" in datos:
                 datos["titulos"] = [{"texto": datos["titulo"], "estructura": "legacy"}]
-            
-            # Validación mínima
             if not datos.get("titulos") or len(datos["titulos"]) < 1:
                 raise ValueError("Faltan títulos")
             if not datos.get("guion") or len(datos["guion"].split()) < 50:
                 raise ValueError("Guion inválido")
             
-            # Elegir mejor título
             mejor_titulo = seleccionar_mejor_titulo(datos["titulos"], signo["nombre"])
             datos["titulo"] = mejor_titulo
             print(f"   🏆 Título elegido: {mejor_titulo} ({len(mejor_titulo)} chars)")
@@ -409,29 +418,21 @@ def llamar_deepseek_short(signo, fecha, video_largo_id=None):
             palabras = len(datos["guion"].split())
             print(f"   📄 Guion: {palabras} palabras")
             
-            # Componer descripción en 3 capas
             partes = []
             if datos.get("descripcion_hook_125"):
                 partes.append(datos["descripcion_hook_125"][:125])
             if datos.get("descripcion_keywords"):
                 partes.append(datos["descripcion_keywords"])
-            
-            # Solo añadir URL si hay video largo REAL
             if video_largo_id:
                 partes.append(f"🎥 Video completo: https://www.youtube.com/watch?v={video_largo_id}")
-            
             partes.append(f"🔔 Suscríbete: {CANAL_LINK}")
             datos["descripcion"] = "\n\n".join(partes)
             
-            # Comentario
             comentario = datos.get("comentario_fijado", "")
             if video_largo_id and video_largo_id not in comentario:
                 comentario += f"\nVideo completo: https://www.youtube.com/watch?v={video_largo_id}"
             datos["comentario_fijado"] = comentario
-            
-            # Tema
             datos["tema"] = detectar_tema(datos)
-            
             return datos
         except Exception as e:
             print(f"⚠️ DeepSeek intento {i+1} falló: {e}")
@@ -446,16 +447,13 @@ def generar_cf_vertical(prompt, ruta):
     headers = {"Authorization": f"Bearer {CF_API_TOKEN}"}
     clean_prompt = re.sub(r'[^a-zA-Z\s]', ' ', prompt)[:150]
     payload = {"prompt": clean_prompt, "steps": 4}
-    
     r = requests.post(url, headers=headers, json=payload, timeout=60)
     if r.status_code != 200:
         print(f"   ❌ Cloudflare HTTP {r.status_code}")
     r.raise_for_status()
-    
     result = r.json()
     if "result" not in result or "image" not in result["result"]:
         raise ValueError("Sin imagen")
-        
     with open(ruta, "wb") as f:
         f.write(base64.b64decode(result["result"]["image"]))
     with Image.open(ruta) as im:
@@ -492,7 +490,7 @@ def generar_pexels_vertical(query, ruta):
 
 def obtener_imagen_short(signo, ruta):
     prompt_epico = PROMPTS_IMAGEN_ELEMENTO.get(signo["elemento"], PROMPTS_IMAGEN_ELEMENTO["fuego"])
-    delays = [5, 15]  # backoff exponencial
+    delays = [5, 15]
     for i, delay in enumerate(delays, start=1):
         try:
             print(f"   ☁️ CF Intento {i}/{len(delays)}...")
@@ -502,18 +500,16 @@ def obtener_imagen_short(signo, ruta):
             if i < len(delays):
                 print(f"   ⏳ Esperando {delay}s...")
                 time.sleep(delay)
-    
     print("   ⚠️ CF agotado, usando Pexels...")
     return generar_pexels_vertical(prompt_epico, ruta)
 
 # ================================================================
-# 5. AUDIO (voz por elemento)
+# 5. AUDIO
 # ================================================================
 async def generar_audio(texto, ruta, elemento="fuego"):
     max_retries = 3
     voz_elegida, rate = VOICE_CONFIG.get(elemento, VOICE_CONFIG["fuego"])
     print(f"   🎤 Voz: {voz_elegida} (rate {rate})")
-    
     for attempt in range(max_retries):
         try:
             communicate = edge_tts.Communicate(texto, voz_elegida, rate=rate)
@@ -524,7 +520,6 @@ async def generar_audio(texto, ruta, elemento="fuego"):
         except Exception as e:
             if attempt < max_retries - 1:
                 await asyncio.sleep(5)
-    
     print("   ⚠️ Edge TTS falló, usando gTTS...")
     try:
         tts = gTTS(text=texto, lang='es', slow=False)
@@ -537,17 +532,15 @@ async def generar_audio(texto, ruta, elemento="fuego"):
         raise Exception(f"Fallo TTS: {str(e)}")
 
 # ================================================================
-# 6. RENDER (con INTRO_DUR + micro-zoom + música por elemento)
+# 6. RENDER
 # ================================================================
 def renderizar_short(signo, guion, img_path, audio_path, salida, intro_teaser=""):
     audio_narracion = AudioFileClip(audio_path)
     audio_dur = audio_narracion.duration
     dur = INTRO_DUR + audio_dur + 0.5
-    
     print(f"   ⏱️ Duración total: {dur:.1f}s ({INTRO_DUR:.0f}s intro + {audio_dur:.1f}s narración + 0.5s cola)")
     print(f"   🎬 Intro teaser: '{intro_teaser}'")
     
-    # Imagen base
     img = Image.open(img_path).convert("RGB")
     img = ImageEnhance.Brightness(img).enhance(1.15)
     img = ImageEnhance.Contrast(img).enhance(1.25)
@@ -566,28 +559,22 @@ def renderizar_short(signo, guion, img_path, audio_path, salida, intro_teaser=""
     draw.text((W_SHORT//2, 400), f"{signo['simbolo']} {signo['nombre'].upper()}",
               font=font_nombre, fill=estilo["text_color"], anchor="mm",
               stroke_width=14, stroke_fill=estilo["stroke_color"])
-    
     mantra = guion.split('.')[-1].strip()[:80]
     draw.text((W_SHORT//2, 1600), mantra, font=font_mantra,
               fill=estilo["mantra_color"], anchor="mm",
               stroke_width=10, stroke_fill=(0, 0, 0))
-    
-    # Teaser en el centro para los 2s de intro
     if intro_teaser:
         draw.text((W_SHORT//2, 960), intro_teaser.upper(), font=font_teaser,
                   fill=(255, 255, 255), anchor="mm",
                   stroke_width=12, stroke_fill=estilo["text_color"])
-    
     img.save("temp_short_frame.jpg")
     
-    # Viñeta cacheada
     def vignette_vert(size, base=1.0, fuerza=0.3):
         w, h = size
         y, x = np.ogrid[-1:1:h * 1j, -1:1:w * 1j]
         d = np.clip(np.sqrt(x ** 2 + y ** 2) / 1.414, 0, 1)
         return ((1 - fuerza * d ** 2.2) * base).astype(np.float32)[..., None]
     
-    # Imagen base cargada UNA sola vez
     base_img = Image.open("temp_short_frame.jpg").convert("RGB")
     base_sz = (int(W_SHORT * 1.15), int(H_SHORT * 1.15))
     base_img = ImageOps.fit(base_img, base_sz, Image.LANCZOS)
@@ -597,33 +584,21 @@ def renderizar_short(signo, guion, img_path, audio_path, salida, intro_teaser=""
     
     def frame(t):
         if t < INTRO_DUR:
-            # Intro: micro-zoom 100% → 103%, centrado
             p = t / INTRO_DUR
             zoom = 1 + 0.03 * p
             y_drift = 0
         else:
-            # Cuerpo: Ken Burns normal
             p = min(max((t - INTRO_DUR) / audio_dur, 0), 1)
             zoom = 1 + 0.15 * p
             y_drift = 0.3 * p
-        
         cw = base_sz[0] / zoom
         ch = cw * base_sz[1] / base_sz[0]
         mx, my = base_sz[0] - cw, base_sz[1] - ch
         y0 = my / 2 + my * y_drift
-        
-        fr = np.asarray(base_img.resize(
-            (W_SHORT, H_SHORT), Image.BILINEAR,
-            box=(mx/2, y0, mx/2+cw, y0+ch)
-        ))
-        return fr
+        return np.asarray(base_img.resize((W_SHORT, H_SHORT), Image.BILINEAR, box=(mx/2, y0, mx/2+cw, y0+ch)))
     
     video = VideoClip(frame, duration=dur)
-    
-    # Narración retrasada por INTRO_DUR
     audio_narracion = audio_narracion.set_start(INTRO_DUR)
-    
-    # Música por elemento
     musica_elegida = obtener_musica(signo["elemento"])
     
     if musica_elegida:
@@ -650,15 +625,13 @@ def renderizar_short(signo, guion, img_path, audio_path, salida, intro_teaser=""
     return salida
 
 # ================================================================
-# 7. SUBIDA (con hashtags rotados por tema)
+# 7. SUBIDA
 # ================================================================
 def subir_short_youtube(ruta_video, datos, signo, video_largo_id, hora_utc):
     youtube = build("youtube", "v3", credentials=obtener_credenciales_youtube())
-    
     tema = datos.get("tema", "general")
     hashtags = construir_hashtags(signo, tema)
     desc = f"{datos['descripcion']}\n\n{hashtags}"
-    
     body = {
         "snippet": {
             "title": datos["titulo"][:100],
@@ -675,11 +648,8 @@ def subir_short_youtube(ruta_video, datos, signo, video_largo_id, hora_utc):
             "containsSyntheticMedia": True
         }
     }
-    
-    req = youtube.videos().insert(
-        part="snippet,status", body=body,
-        media_body=MediaFileUpload(ruta_video, chunksize=4*1024*1024, resumable=True)
-    )
+    req = youtube.videos().insert(part="snippet,status", body=body,
+                                  media_body=MediaFileUpload(ruta_video, chunksize=4*1024*1024, resumable=True))
     resp, reintentos = None, 0
     while resp is None:
         try:
@@ -692,12 +662,10 @@ def subir_short_youtube(ruta_video, datos, signo, video_largo_id, hora_utc):
                 time.sleep(2 ** reintentos)
             else:
                 raise e
-            
     print(f"✅ Short subido. ID: {resp['id']}")
     if datos.get("comentario_fijado"):
         try:
-            youtube.commentThreads().insert(
-                part="snippet",
+            youtube.commentThreads().insert(part="snippet",
                 body={"snippet": {"videoId": resp['id'],
                                   "topLevelComment": {"snippet": {"textOriginal": datos["comentario_fijado"]}}}}
             ).execute()
@@ -706,14 +674,11 @@ def subir_short_youtube(ruta_video, datos, signo, video_largo_id, hora_utc):
     return resp['id']
 
 # ================================================================
-# 8. MAIN (con scheduling inteligente)
+# 8. MAIN
 # ================================================================
 def calcular_hora_publicacion(ahora):
-    """Devuelve una hora óptima de publicación según la hora actual."""
     h = ahora.hour
-    
     if 0 <= h < 4:
-        # Madrugada → programar 6:00-7:00 AM mismo día
         base = ahora.replace(hour=6, minute=0, second=0, microsecond=0)
         mins = random.randint(0, 60)
     elif 4 <= h < 6:
@@ -723,23 +688,18 @@ def calcular_hora_publicacion(ahora):
         base = ahora.replace(hour=10, minute=0, second=0, microsecond=0)
         mins = random.randint(5, 45)
     elif 10 <= h < 14:
-        # Almuerzo
         base = ahora.replace(hour=14, minute=0, second=0, microsecond=0)
         mins = random.randint(5, 45)
     elif 14 <= h < 18:
-        # Tarde → programar 7 PM
         base = ahora.replace(hour=19, minute=0, second=0, microsecond=0)
         mins = random.randint(0, 45)
     elif 18 <= h < 21:
-        # Evening scroll (mejor hora)
         base = ahora
         mins = random.randint(5, 40)
     else:
-        # 21-24h → mañana 6:00-7:00 AM
         manana = ahora + timedelta(days=1)
         base = manana.replace(hour=6, minute=0, second=0, microsecond=0)
         mins = random.randint(0, 60)
-    
     return base + timedelta(minutes=mins)
 
 def main():
@@ -748,7 +708,6 @@ def main():
         print(f"🤖 Bot ejecutándose...")
         
         estado = cargar_estado()
-        
         if len(estado.get("publicados_hoy", [])) >= MAX_SHORTS_DIARIOS:
             print(f"⚠️ LÍMITE ALCANZADO: {MAX_SHORTS_DIARIOS} Shorts hoy.")
             print(f"📋 Publicados: {estado['publicados_hoy']}")
@@ -765,21 +724,15 @@ def main():
         video_largo_id = buscar_ultimo_video_largo()
         print(f"🎬 Video largo ID: {video_largo_id}")
         
-        datos = llamar_deepseek_short(
-            signo,
-            datetime.now(TZ).strftime("%d de %B de %Y"),
-            video_largo_id  # None si no hay → no se inyecta URL rota
-        )
+        datos = llamar_deepseek_short(signo, datetime.now(TZ).strftime("%d de %B de %Y"), video_largo_id)
         print(f"   📝 Título: {datos['titulo']} ({len(datos['titulo'])} chars)")
         print(f"   🎨 Tema: {datos['tema']}")
         print(f"   💡 Teaser: {datos.get('intro_teaser', '')}")
         
         obtener_imagen_short(signo, "temp_short_img.jpg")
         asyncio.run(generar_audio(datos["guion"], "temp_short_audio.mp3", signo["elemento"]))
-        renderizar_short(
-            signo, datos["guion"], "temp_short_img.jpg", "temp_short_audio.mp3",
-            "short_final.mp4", intro_teaser=datos.get("intro_teaser", "")
-        )
+        renderizar_short(signo, datos["guion"], "temp_short_img.jpg", "temp_short_audio.mp3",
+                         "short_final.mp4", intro_teaser=datos.get("intro_teaser", ""))
         subir_short_youtube("short_final.mp4", datos, signo, video_largo_id, hora_utc)
         
         guardar_estado(estado)
