@@ -1,55 +1,54 @@
-name: Bot Horoscopo Master (Tu Cielo Hoy)
+name: Publicar Video Diario - Código Mental
 
 on:
   schedule:
-    - cron: '0 10 * * *'
-  workflow_dispatch:
-
-permissions:
-  contents: write
+    # Se ejecuta todos los días a las 12:00 UTC (06:00 AM en CDMX).
+    # Esto le da al bot 2 horas para generar el video y programarlo a las 8:00 AM (con variación).
+    - cron: '0 12 * * *'
+  workflow_dispatch: # Permite ejecutarlo manualmente desde la pestaña "Actions" de GitHub si lo necesitas
 
 jobs:
-  generate-and-upload:
+  publicar-video:
     runs-on: ubuntu-latest
-
-    env:
-      DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
-      PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
-      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-      YOUTUBE_USER_TOKEN: ${{ secrets.YOUTUBE_USER_TOKEN }}
-      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      GITHUB_REPOSITORY: ${{ github.repository }}
-
+    
     steps:
-      - name: Clonar repositorio
-        uses: actions/checkout@v4
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          fetch-depth: 0
+    - name: Checkout del repositorio
+      uses: actions/checkout@v3
 
-      - name: Configurar Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.10'
+    - name: Configurar Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.10'
 
-      - name: Verificar secrets
-        run: python -c "import os,sys; keys=['DEEPSEEK_API_KEY','PEXELS_API_KEY','CLOUDFLARE_ACCOUNT_ID','CLOUDFLARE_API_TOKEN','YOUTUBE_USER_TOKEN','GITHUB_TOKEN']; missing=[k for k in keys if not os.getenv(k)]; print('Faltan:',missing) if missing else print('Variables listas'); sys.exit(1) if missing else None"
+    - name: Instalar dependencias del sistema (FFmpeg)
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y ffmpeg
 
-      - name: Instalar FFmpeg
-        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+    - name: Instalar dependencias de Python
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
 
-      - name: Instalar dependencias
-        run: pip install -r requirements.txt
-
-      - name: Ejecutar Bot
-        run: python bt_yt_t_clo_hy.py
-
-      - name: Subir logs si falla
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: bot-error-logs
-          path: |
-            temp_*.jpg
-            temp_*.mp3
+    - name: Ejecutar Bot de Psicología (1 Largo + 2 Shorts)
+      env:
+        DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+        DEEPSEEK_MODEL: ${{ secrets.DEEPSEEK_MODEL }}
+        PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
+        CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        YOUTUBE_USER_TOKEN: ${{ secrets.YOUTUBE_USER_TOKEN }}
+        YOUTUBE_PLAYLIST_ID: ${{ secrets.YOUTUBE_PLAYLIST_ID }}
+        
+        # Configuración de horarios con variación humana
+        HORA_LARGO: 8
+        VARIACION_MINUTOS_LARGO: 30
+        HORA_SHORT_1: 10
+        VARIACION_MINUTOS_SHORT_1: 45
+        HORA_SHORT_2: 15
+        VARIACION_MINUTOS_SHORT_2: 60
+        
+        GENERAR_SHORT: "true"
+        PROGRAMAR_PICO: "true"
+        INTERVALO_MIN_HORAS: "24"
+      run: python bt_yt_psico.py
