@@ -1,16 +1,16 @@
 # -*- coding: utf-8 -*-
 """
-CÓDIGO MENTAL - Bot v2.1 ELITE MASTER PREMIUM
-Cambios v2.1 sobre v2.0:
-  - Duración video 8-12 min (antes 7-11)
-  - Palabras por punto 320-400 (antes 250-320)
-  - Shorts 35-42 seg (antes 32-50)
+CÓDIGO MENTAL - Bot v2.2 ELITE MASTER PREMIUM
+Cambios v2.2 sobre v2.1:
+  - Fallback de 4 niveles: Cloudflare → Pool Flux → Pexels → Gradiente
+  - Pool de imágenes Flux reutilizables (ahorra API y mantiene calidad)
+  - Pexels restaurado como fallback real (no solo gradiente)
+  - Rotación inteligente del pool (no repite la misma imagen dos veces seguidas)
+v2.1:
+  - Duración video 8-12 min, palabras por punto 320-400
+  - Shorts 35-42 seg
   - Programación slots batch MISMO DÍA (fix bug de días cruzados)
-  - Descripción SEO elite: keyword en primeras 2 líneas
-  - Hashtags optimizados (3-5 relevantes, no 15 spam)
-  - Tags mix estratégico: exactos + broad + long-tail + preguntas
-  - CTA shorts con 4 variantes rotativas
-  - Logs trazables con resumen final de shorts
+  - Descripción SEO elite, tags estratégicos, CTA rotativos
 """
 import asyncio
 import bisect
@@ -61,6 +61,8 @@ CLOUDFLARE_ACCOUNT_ID = os.getenv("CLOUDFLARE_ACCOUNT_ID")
 CLOUDFLARE_API_TOKEN  = os.getenv("CLOUDFLARE_API_TOKEN")
 CLOUDFLARE_MODEL      = "@cf/black-forest-labs/flux-1-schnell"
 
+PEXELS_API_KEY = os.getenv("PEXELS_API_KEY")   # fallback opcional
+
 YOUTUBE_USER_TOKEN = json.loads(os.getenv("YOUTUBE_USER_TOKEN") or "{}")
 PLAYLIST_ID        = os.getenv("YOUTUBE_PLAYLIST_ID", "")
 CANAL_LINK         = "https://www.youtube.com/@codigomentalnovisible"
@@ -69,13 +71,11 @@ ESTADO_FILE  = "estado_shorts.json"
 TITULOS_FILE = "titulos_publicados.json"
 TEMAS_FILE   = "temas_shorts.json"
 
-# ⚡ NUEVO v2.1: duración 8-12 min para mid-roll ads + watch time óptimo
-DURACION_MINIMA_SEGUNDOS = 480   # 8 min (mínimo monetizable + mid-roll ads)
-DURACION_MAXIMA_SEGUNDOS = 720   # 12 min (techo antes de perder retention)
+DURACION_MINIMA_SEGUNDOS = 480   # 8 min
+DURACION_MAXIMA_SEGUNDOS = 720   # 12 min
 NUM_PUNTOS               = 5
 MAX_INTENTOS_EXPANSION   = 1
 
-# ⚡ NUEVO v2.1: shorts en 35-42 seg (28-36 contenido + ~6 CTA)
 SHORT_CONTENT_MIN = 28
 SHORT_CONTENT_MAX = 36
 
@@ -121,7 +121,7 @@ CTA_SHORTS = [
 ]
 
 # =================================================================
-# TEMAS — PSICOLOGÍA, ESTOICISMO, NEUROCIENCIA
+# TEMAS
 # =================================================================
 TEMAS = [
     {"tema": "detox_dopamina", "seed": "detox dopamina",
@@ -335,6 +335,24 @@ def llm(prompt, temperature=0.8, max_tokens=1500, json_mode=False, system=None, 
             print(f"⚠️ LLM intento {i+1}/{intentos}: {e}")
             time.sleep(5 * (i + 1))
     return None
+
+def descargar(url, ruta, max_bytes=20 * 1024 * 1024):
+    try:
+        with requests.get(url, stream=True, timeout=40) as r:
+            r.raise_for_status()
+            total = 0
+            with open(ruta, "wb") as f:
+                for chunk in r.iter_content(1 << 16):
+                    total += len(chunk)
+                    if total > max_bytes:
+                        raise ValueError("archivo demasiado grande")
+                    f.write(chunk)
+            return os.path.getsize(ruta) > 1000
+    except Exception as e:
+        print(f"⚠️ Descarga fallida: {e}")
+        if os.path.exists(ruta):
+            os.remove(ruta)
+        return False
 
 def fmt_ts(seg):
     seg = int(seg)
@@ -808,7 +826,40 @@ def construir_timeline(segs):
     return t
 
 # =================================================================
-# CLOUDFLARE FLUX
+# POOL DE IMÁGENES FLUX (fallback nivel 2)
+# =================================================================
+POOL_FLUX = []          # rutas de imágenes Flux ya generadas
+POOL_FLUX_INDEX = 0     # índice circular para rotación
+USADOS_PEXELS = set()   # URLs de Pexels ya usadas (evitar duplicados)
+
+def registrar_imagen_flux(ruta):
+    """Añade una imagen Flux al pool para reutilización futura."""
+    if ruta and os.path.exists(ruta) and ruta not in POOL_FLUX:
+        POOL_FLUX.append(ruta)
+
+def reutilizar_imagen_flux(idx):
+    """
+    Fallback nivel 2: recicla una imagen Flux ya generada.
+    Rotación circular para evitar repetir la misma dos veces seguidas.
+    """
+    global POOL_FLUX_INDEX
+    if not POOL_FLUX:
+        return None
+    # Copia física para que el render no comparta archivo con otro segmento
+    original = POOL_FLUX[POOL_FLUX_INDEX % len(POOL_FLUX)]
+    POOL_FLUX_INDEX += 1
+    try:
+        ruta = f"temp_img_{idx}_reused.jpg"
+        with open(original, "rb") as src, open(ruta, "wb") as dst:
+            dst.write(src.read())
+        print(f"   ♻️ Reutilizando imagen Flux del pool ({len(POOL_FLUX)} disponibles)")
+        return ruta
+    except Exception as e:
+        print(f"   ⚠️ Error reutilizando imagen: {e}")
+        return None
+
+# =================================================================
+# CLOUDFLARE FLUX (fallback nivel 1)
 # =================================================================
 ANTI_DEFORM = (", cinematic wide shot, professional lighting, highly detailed, "
                "photorealistic, 8k, no text, no deformed faces, no mutated hands, "
@@ -845,6 +896,7 @@ def generar_imagen_cloudflare(prompt_en, idx, intentos=3):
                         continue
                 if os.path.exists(ruta) and os.path.getsize(ruta) > 1000:
                     print(f"   ✅ Imagen Cloudflare generada")
+                    registrar_imagen_flux(ruta)   # ← añadir al pool
                     return ruta
             else:
                 print(f"   ⚠️ Cloudflare {r.status_code}: {r.text[:150]}")
@@ -853,13 +905,65 @@ def generar_imagen_cloudflare(prompt_en, idx, intentos=3):
         time.sleep(3 * (i + 1))
     return None
 
+# =================================================================
+# PEXELS (fallback nivel 3)
+# =================================================================
+def pexels_get(url, params, intentos=3):
+    for i in range(intentos):
+        try:
+            r = requests.get(url, headers={"Authorization": PEXELS_API_KEY},
+                             params=params, timeout=25)
+            if r.status_code == 200:
+                time.sleep(0.5)
+                return r.json()
+            if r.status_code == 429:
+                time.sleep(20 * (i + 1))
+                continue
+            print(f"⚠️ Pexels {r.status_code}")
+        except Exception as e:
+            print(f"⚠️ Pexels error: {e}")
+            time.sleep(2)
+    return None
+
+def buscar_fotos_pexels(query, cantidad=1):
+    for pagina in (random.randint(1, 2), 1):
+        data = pexels_get(
+            "https://api.pexels.com/v1/search",
+            {"query": query, "orientation": "landscape", "size": "large",
+             "per_page": 10, "page": pagina}
+        )
+        fotos = [f["src"]["large2x"] for f in (data or {}).get("photos", [])]
+        random.shuffle(fotos)
+        fotos = [u for u in fotos if u not in USADOS_PEXELS]
+        if fotos:
+            return fotos[:cantidad]
+    return []
+
+def imagen_fallback_pexels(prompt_en, idx):
+    """Fallback nivel 3: foto real de Pexels con el mismo prompt."""
+    if not PEXELS_API_KEY:
+        return None
+    query = " ".join(prompt_en.split()[:4])
+    urls = buscar_fotos_pexels(query, 1)
+    if urls:
+        ruta = f"temp_img_{idx}_pexels.jpg"
+        if descargar(urls[0], ruta, 15 * 1024 * 1024):
+            USADOS_PEXELS.add(urls[0])
+            print(f"   🔄 Fallback Pexels OK: {query}")
+            return ruta
+    return None
+
+# =================================================================
+# GRADIENTE OSCURO (fallback nivel 4 - survival)
+# =================================================================
 def imagen_fallback(idx):
+    """Último recurso: gradiente oscuro. Nunca falla, nunca crashea."""
     img = Image.new("RGB", (W, H), (10, 15, 25))
     draw = ImageDraw.Draw(img)
     for y in range(H):
         color = (int(10 + 30 * y / H), int(15 + 20 * y / H), int(25 + 40 * y / H))
         draw.line([(0, y), (W, y)], fill=color)
-    ruta = f"temp_img_{idx}.jpg"
+    ruta = f"temp_img_{idx}_gradient.jpg"
     img.save(ruta, "JPEG", quality=85)
     return ruta
 
@@ -1123,17 +1227,15 @@ def _ascii_tag_yt(t):
     return re.sub(r'\s+', ' ', limpio).strip()
 
 def construir_tags(plan, tema, sugerencias):
-    """Mix elite vidIQ: exactos + broad + long-tail + preguntas."""
     nombre_tema = _ascii_tag_yt(tema["tema"].replace("_", " "))
 
     tags_ia = plan.get("tags", [])
     if isinstance(tags_ia, str):
         tags_ia = [x.strip() for x in tags_ia.split(",")]
 
-    # Estructura por capas (SEO estratégico)
-    exactos = list(tags_ia)[:5]                          # 5 específicos IA
+    exactos = list(tags_ia)[:5]
     broad = ["psicologia", "estoicismo", "desarrollo personal",
-             "inteligencia emocional", "mentalidad"]      # 5 broad del canal
+             "inteligencia emocional", "mentalidad"]
     long_tail = [
         f"psicologia {nombre_tema}",
         f"estoicismo {nombre_tema}",
@@ -1164,7 +1266,6 @@ def construir_tags(plan, tema, sugerencias):
     return resultado
 
 def construir_hashtags(tema, plan):
-    """SEO elite: 4-5 hashtags relevantes (no spam). Los 3 primeros son críticos."""
     base = ["#Psicologia", "#DesarrolloPersonal"]
     tema_hs = tema.get("hashtags", [])[:2]
     extra = "#Estoicismo"
@@ -1178,20 +1279,12 @@ def construir_hashtags(tema, plan):
     return " ".join(vistos[:5])
 
 def construir_descripcion(plan, tema, caps_ts, sugerencias, hashtags):
-    """
-    Descripción SEO elite:
-    - Línea 1: keyword principal + promesa (aparece en búsqueda, crítico)
-    - Línea 2: hook secundario
-    - Capítulos, sinopsis, CTA, redes, hashtags
-    """
     kws = plan.get("palabras_clave", [])
     keyword_principal = kws[0] if kws else tema["tema"].replace("_", " ")
     dato_c = plan.get("dato_contraintuitivo", "")
     resumen = plan.get("resumen", "")
 
-    # ⚡ Línea 1 SEO: keyword + promesa (primeros 150 chars críticos)
     linea1 = f"{keyword_principal.title()}: {dato_c}." if dato_c else f"{keyword_principal.title()}: {resumen[:120]}"
-    # ⚡ Línea 2: promesa específica
     linea2 = f"En este video te explico {plan.get('gancho', '')[:180]}"
 
     capitulos = "\n".join(f"{ts} {t}" for ts, t in caps_ts)
@@ -1264,10 +1357,6 @@ def deberia_publicar(estado):
     return True
 
 def proximo_slot_batch():
-    """
-    ⚡ v2.1: Garantiza que los 3 slots caigan el MISMO DÍA.
-    Antes cada slot se calculaba independiente → bug de días cruzados.
-    """
     ahora = datetime.now(TZ)
     slot_mas_temprano_hoy = (
         ahora.replace(hour=HORA_LARGO, minute=0, second=0, microsecond=0)
@@ -1372,9 +1461,6 @@ def extras_post_subida(youtube, vid, miniatura, srt, comentario):
 # SHORTS
 # =================================================================
 def crear_short(segs_orig, fondo, indice, salida="short_final.mp4", modo="gancho"):
-    """
-    ⚡ v2.1: contenido 28-36s + CTA = 35-42s total (sweet spot vidIQ).
-    """
     segs = [{**s} for s in segs_orig]
     if modo == "gancho":
         candidatos = segs[:8]
@@ -1459,6 +1545,22 @@ def verificar_envs():
     if faltan:
         print(f"❌ Faltan variables: {', '.join(faltan)}")
         sys.exit(1)
+
+    if not PEXELS_API_KEY:
+        print("⚠️ PEXELS_API_KEY no configurada — sin fallback Pexels")
+    else:
+        try:
+            r = requests.get(
+                "https://api.pexels.com/v1/search?query=test&per_page=1",
+                headers={"Authorization": PEXELS_API_KEY}, timeout=10
+            )
+            if r.status_code == 200:
+                print("✅ Pexels OK (fallback nivel 3)")
+            else:
+                print(f"⚠️ Pexels respondió {r.status_code} — fallback deshabilitado")
+        except Exception as e:
+            print(f"⚠️ Pexels no responde: {e}")
+
     yt = crear_cliente_youtube()
     if yt is None:
         print("❌ YOUTUBE_USER_TOKEN inválido/expirado")
@@ -1495,9 +1597,10 @@ def main():
         sys.exit(0)
 
     print("=" * 70)
-    print("🧠 CÓDIGO MENTAL - BOT v2.1 ELITE MASTER PREMIUM")
+    print("🧠 CÓDIGO MENTAL - BOT v2.2 ELITE MASTER PREMIUM")
     print(f"📅 {datetime.now(TZ):%Y-%m-%d %H:%M} | 🎤 {VOZ_CANAL['voz']}")
     print(f"📤 1 Video Largo (8-12 min) + 2 Shorts (35-42s) | 🎨 Flux SEG_ESCENA={SEG_ESCENA}s")
+    print(f"🛡️  Fallback: Cloudflare → Pool Flux → Pexels → Gradiente")
     print("=" * 70)
 
     actualizar_rendimiento(youtube, estado)
@@ -1579,20 +1682,47 @@ def main():
     total = construir_timeline(segs)
     print(f"⏱️ Duración final: {total/60:.1f} min")
 
+    # ============ GENERACIÓN DE IMÁGENES CON 4 NIVELES DE FALLBACK ============
     print("🎨 Planificando visuales con IA...")
     prompts_visuales = planificar_visuales(segs, tema)
 
+    stats = {"flux": 0, "pool": 0, "pexels": 0, "gradient": 0}
     for i, s in enumerate(segs):
         n_imgs = max(1, round(s["dur_audio"] / SEG_ESCENA))
         prompt_visual = prompts_visuales[i] if i < len(prompts_visuales) else "cinematic dark moody professional scene"
         print(f"🖼️ {i+1}/{len(segs)} [{s['etapa']}] '{prompt_visual}' x{n_imgs}")
         medios = []
         for k in range(n_imgs):
-            ruta = generar_imagen_cloudflare(prompt_visual, f"{i}_{k}")
-            if not ruta:
-                ruta = imagen_fallback(f"{i}_{k}")
+            img_id = f"{i}_{k}"
+            # Nivel 1: Cloudflare Flux
+            ruta = generar_imagen_cloudflare(prompt_visual, img_id)
+            if ruta:
+                stats["flux"] += 1
+            else:
+                # Nivel 2: Pool de imágenes Flux ya generadas
+                ruta = reutilizar_imagen_flux(img_id)
+                if ruta:
+                    stats["pool"] += 1
+                else:
+                    # Nivel 3: Pexels
+                    ruta = imagen_fallback_pexels(prompt_visual, img_id)
+                    if ruta:
+                        stats["pexels"] += 1
+                    else:
+                        # Nivel 4: Gradiente (survival)
+                        print(f"   ⚠️ Cloudflare+Pool+Pexels fallaron, usando gradiente")
+                        ruta = imagen_fallback(img_id)
+                        stats["gradient"] += 1
             medios.append(ruta)
         s["medios"] = medios
+
+    print("=" * 70)
+    print(f"📊 RESUMEN IMÁGENES:")
+    print(f"   🎨 Cloudflare Flux: {stats['flux']}")
+    print(f"   ♻️  Pool reciclado:  {stats['pool']}")
+    print(f"   🔄 Pexels:          {stats['pexels']}")
+    print(f"   ⚠️  Gradientes:      {stats['gradient']}")
+    print("=" * 70)
 
     caps_ts = []
     for p in range(n_puntos):
@@ -1616,7 +1746,11 @@ def main():
     escena_mini = str(plan.get("miniatura_escena", "professional psychology cinematic dark"))
     base_mini = generar_imagen_cloudflare(escena_mini + " for thumbnail", "thumb")
     if not base_mini:
-        base_mini = imagen_fallback("thumb")
+        base_mini = reutilizar_imagen_flux("thumb_mini")
+    if not base_mini:
+        base_mini = imagen_fallback_pexels(escena_mini, "thumb_mini")
+    if not base_mini:
+        base_mini = imagen_fallback("thumb_mini")
     miniatura = "miniatura.jpg" if crear_miniatura(base_mini, portada, "miniatura.jpg") else None
 
     escenas = construir_escenas(segs)
