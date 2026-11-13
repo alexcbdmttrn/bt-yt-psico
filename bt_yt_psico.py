@@ -1,16 +1,20 @@
 # -*- coding: utf-8 -*-
 """
-CÓDIGO MENTAL - Bot v2.0
-Fusionado con arquitectura de élite de Sombras de Medianoche v6.4:
-- Flux via Cloudflare (@cf/black-forest-labs/flux-1-schnell) — anatomía correcta
-- Ritmo cinematográfico SEG_ESCENA=14s — oculta imperfecciones de IA
-- Planificación visual dirigida por IA (planificar_consultas)
-- Anti-deformidad automática en todos los prompts
-- Sistema de puntuación de títulos con bonus "dato_contraintuitivo"
-- 1 video largo + 2 shorts programados con horarios variables
+CÓDIGO MENTAL - Bot v2.1 ELITE MASTER PREMIUM
+Cambios v2.1 sobre v2.0:
+  - Duración video 8-12 min (antes 7-11)
+  - Palabras por punto 320-400 (antes 250-320)
+  - Shorts 35-42 seg (antes 32-50)
+  - Programación slots batch MISMO DÍA (fix bug de días cruzados)
+  - Descripción SEO elite: keyword en primeras 2 líneas
+  - Hashtags optimizados (3-5 relevantes, no 15 spam)
+  - Tags mix estratégico: exactos + broad + long-tail + preguntas
+  - CTA shorts con 4 variantes rotativas
+  - Logs trazables con resumen final de shorts
 """
 import asyncio
 import bisect
+import gc
 import json
 import os
 import random
@@ -65,13 +69,18 @@ ESTADO_FILE  = "estado_shorts.json"
 TITULOS_FILE = "titulos_publicados.json"
 TEMAS_FILE   = "temas_shorts.json"
 
-DURACION_MINIMA_SEGUNDOS = 420   # 7 min
-DURACION_MAXIMA_SEGUNDOS = 660   # 11 min
+# ⚡ NUEVO v2.1: duración 8-12 min para mid-roll ads + watch time óptimo
+DURACION_MINIMA_SEGUNDOS = 480   # 8 min (mínimo monetizable + mid-roll ads)
+DURACION_MAXIMA_SEGUNDOS = 720   # 12 min (techo antes de perder retention)
 NUM_PUNTOS               = 5
 MAX_INTENTOS_EXPANSION   = 1
 
-SEG_MAX_PALABRAS = 45    # segmentos de audio cortos = audio más limpio
-SEG_ESCENA       = 14.0  # ⚡ 1 imagen cada 14s — ritmo cinematográfico
+# ⚡ NUEVO v2.1: shorts en 35-42 seg (28-36 contenido + ~6 CTA)
+SHORT_CONTENT_MIN = 28
+SHORT_CONTENT_MAX = 36
+
+SEG_MAX_PALABRAS = 45
+SEG_ESCENA       = 14.0
 W, H, FPS        = 1920, 1080, 24
 VOL_FONDO        = 0.10
 USAR_IMAGENES_IA = os.getenv("USAR_IMAGENES_IA", "true").lower() == "true"
@@ -103,6 +112,13 @@ FONDOS_DISPONIBLES = [
     "Silent Mind.mp3", "Inner Cosmos.mp3", "Zenith.mp3",
 ]
 FUENTE_URL = "https://raw.githubusercontent.com/google/fonts/main/ofl/anton/Anton-Regular.ttf"
+
+CTA_SHORTS = [
+    "Esto es solo una parte. El video completo está en el canal. Suscríbete ahora.",
+    "El análisis completo te espera en el canal. Suscríbete para verlo.",
+    "Si esto te movió algo, el video completo está en el canal. Suscríbete.",
+    "No te quedes con la duda. El video completo ya está en el canal.",
+]
 
 # =================================================================
 # TEMAS — PSICOLOGÍA, ESTOICISMO, NEUROCIENCIA
@@ -195,7 +211,7 @@ TEMAS = [
     {"tema": "soledad", "seed": "soledad y crecimiento",
      "angulo": "Cómo transformar la soledad en tu mayor ventaja competitiva.",
      "keywords": ["soledad", "autoconocimiento", "crecimiento", "independencia"],
-     "contextos": ["vida moderna", "trabajo remoto", "transiciones", "silenzio"],
+     "contextos": ["vida moderna", "trabajo remoto", "transiciones", "silencio"],
      "hashtags": ["#Soledad", "#Crecimiento"]},
 
     {"tema": "carisma", "seed": "carisma y presencia",
@@ -326,7 +342,7 @@ def fmt_ts(seg):
     return f"{h}:{m:02d}:{s:02d}" if h else f"{m:02d}:{s:02d}"
 
 # =================================================================
-# HISTORIAL DE TÍTULOS Y TEMAS
+# HISTORIAL
 # =================================================================
 def titulo_ya_publicado(titulo):
     data = cargar_json(TITULOS_FILE, {"titulos": []})
@@ -442,7 +458,7 @@ def elegir_tema(estado, youtube):
     return elegido
 
 # =================================================================
-# TÍTULOS — Sistema de puntuación adaptado
+# TÍTULOS
 # =================================================================
 GANCHOS = [
     "nunca", "nadie", "jamás", "nadie te", "prohibido", "secreto",
@@ -480,21 +496,18 @@ def puntuar_titulo(t, dato_contraintuitivo=""):
         s += 2
     s += min(3, sum(1 for g in GANCHOS if g in tl))
 
-    # ★ BONUS: patrón "Si... NUNCA/NO"
     if re.search(r'\bsi\b.{1,60}(nunca|no\s)', tl, re.I | re.S):
         s += 6
-    # ★ BONUS: número específico de la lista (5 señales, 7 hábitos, etc.)
     if re.search(r'\b\d{1,2}\s+(señales|habitos|hábitos|claves|trucos|reglas|formas|maneras|razones)', tl):
         s += 4
 
-    # ★ BONUS: dato contraintuitivo mencionado (equivalente a "elemento imposible")
     if dato_contraintuitivo:
-        dc_words = set(re.findall(r"\w+", dato_contraintuitivo.lower())) - {"de", "la", "el", "que", "y", "en", "un", "una", "por", "para", "con", "los", "las"}
+        dc_words = set(re.findall(r"\w+", dato_contraintuitivo.lower())) - {
+            "de", "la", "el", "que", "y", "en", "un", "una", "por", "para", "con", "los", "las"}
         tit_words = set(re.findall(r"\w+", tl))
         if len(dc_words & tit_words) >= 2:
             s += 5
 
-    # ★ BONUS: contradicción / paradoja ("menos", "peor", "nunca", "deja de")
     if re.search(r'\b(menos|peor|nunca|deja de|evita|no hagas|no debes)\b', tl):
         s += 3
 
@@ -551,10 +564,10 @@ ESQUEMA_PLAN = """{
  "dato_contraintuitivo": "CRÍTICO: el dato más sorprendente que rompe expectativas. Ej: 'sonreír más te hace menos creíble', 'estudiar más horas reduce el aprendizaje', 'la multitarea baja el CI 10 puntos'. Debe aparecer en AL MENOS 3 de los 6 títulos",
  "gancho": "1-2 frases (máx 35 palabras) que abren el video con el dato_contraintuitivo en primera persona",
  "resumen": "sinopsis de 2-3 oraciones sin spoilers",
- "palabras_clave": ["5 keywords SEO en español"],
+ "palabras_clave": ["5 keywords SEO en español, la primera es el keyword principal del video"],
  "palabras_portada": ["3 opciones de 2-3 palabras EN MAYÚSCULAS, impacto visual"],
  "miniatura_escena": "4-6 palabras en inglés para buscar/imagen (ej: brain scan, nervous person meeting, two people arguing)",
- "descripcion_gancho": "2 líneas: keyword principal + promesa concreta; segunda invita a suscribirse",
+ "descripcion_gancho": "2 líneas: la primera con el keyword principal y una promesa concreta; la segunda invita a suscribirse",
  "titulo_short": "gancho de máx 55 caracteres para YouTube Short",
  "pregunta_comentario": "pregunta corta que invite a comentar",
  "tags": ["10 tags ULTRA-ESPECÍFICOS: 2-3 del tema central, 2-3 de la mecánica, 1-2 preguntas de audiencia, 1-2 'psicologia + elemento', 1-2 'estoicismo + elemento'"],
@@ -566,7 +579,7 @@ def generar_plan(tema, contexto, sugerencias, titulos_previos, formato, perfil):
     sug  = "\n".join(f"- {s}" for s in sugerencias) or "Ninguna"
 
     prompt = f"""Eres showrunner de un canal de psicología aplicada en español (México/Latam) con millones de vistas.
-Diseña el PLAN de un video educativo de ~8-10 minutos, con {NUM_PUNTOS} puntos principales.
+Diseña el PLAN de un video educativo de ~9-11 minutos, con {NUM_PUNTOS} puntos principales.
 
 TEMA: {tema['tema']} | ÁNGULO: {tema['angulo']}
 CONTEXTO: {contexto}
@@ -632,10 +645,10 @@ def generar_puntos(plan, tema, contexto):
     indice = "\n".join(f"{i+1}. {p.get('titulo','')}: {p.get('resumen','')}"
                        for i, p in enumerate(puntos))
     textos = []
-    formato     = plan.get("_formato_instruccion", "Explicación directa.")
-    perfil      = plan.get("_perfil_narrador", "psicólogo")
-    nombre_fmt  = plan.get("_nombre_formato", "lista_educativa")
-    dato_c      = plan.get("dato_contraintuitivo", "un dato sorprendente")
+    formato    = plan.get("_formato_instruccion", "Explicación directa.")
+    perfil     = plan.get("_perfil_narrador", "psicólogo")
+    nombre_fmt = plan.get("_nombre_formato", "lista_educativa")
+    dato_c     = plan.get("dato_contraintuitivo", "un dato sorprendente")
 
     for i, punto in enumerate(puntos):
         previo = textos[-1][-600:] if textos else ""
@@ -665,7 +678,7 @@ ESTE PUNTO: {punto.get('titulo', '')} → {punto.get('resumen', '')}
 {('CIERRE DEL PUNTO ANTERIOR: ' + previo) if previo else ''}
 
 REGLAS:
-- 250-320 palabras exactas
+- 320-400 palabras exactas
 - Español neutro-mexicano, tono de autoridad pero accesible
 - Cada punto aporta VALOR: ejemplo cotidiano + explicación + aplicación práctica
 - Incluye 1 estudio, autor o dato científico (real o plausible)
@@ -675,9 +688,9 @@ REGLAS:
 Devuelve SOLO el texto del punto."""
         texto = None
         for intento in range(3):
-            t = llm(prompt, temperature=0.85, max_tokens=800)
+            t = llm(prompt, temperature=0.85, max_tokens=1000)
             t = limpiar_texto_narracion(t) if t else ""
-            if len(t.split()) >= 200:
+            if len(t.split()) >= 280:
                 texto = t
                 break
             print(f"⚠️ Punto {i+1} corto ({len(t.split())} pal.)")
@@ -740,7 +753,7 @@ def crear_segmentos(puntos_txt):
     return segs
 
 # =================================================================
-# VOZ (edge_tts)
+# VOZ
 # =================================================================
 def duracion_audio(ruta):
     a = AudioFileClip(ruta)
@@ -795,7 +808,7 @@ def construir_timeline(segs):
     return t
 
 # =================================================================
-# CLOUDFLARE FLUX — Generación de imágenes
+# CLOUDFLARE FLUX
 # =================================================================
 ANTI_DEFORM = (", cinematic wide shot, professional lighting, highly detailed, "
                "photorealistic, 8k, no text, no deformed faces, no mutated hands, "
@@ -818,12 +831,10 @@ def generar_imagen_cloudflare(prompt_en, idx, intentos=3):
             r = requests.post(url, headers=headers, json=payload, timeout=120)
             if r.status_code == 200:
                 ruta = f"temp_img_{idx}.jpg"
-                # flux-1-schnell devuelve binario
                 if r.headers.get("Content-Type", "").startswith("image"):
                     with open(ruta, "wb") as f:
                         f.write(r.content)
                 else:
-                    # Fallback: JSON con base64
                     import base64
                     data = r.json()
                     if "result" in data and "image" in data["result"]:
@@ -843,8 +854,6 @@ def generar_imagen_cloudflare(prompt_en, idx, intentos=3):
     return None
 
 def imagen_fallback(idx):
-    """Genera una imagen gradient oscura si Cloudflare falla"""
-    from PIL import Image
     img = Image.new("RGB", (W, H), (10, 15, 25))
     draw = ImageDraw.Draw(img)
     for y in range(H):
@@ -855,10 +864,9 @@ def imagen_fallback(idx):
     return ruta
 
 # =================================================================
-# PLANIFICACIÓN VISUAL POR IA (equivalente a planificar_consultas)
+# PLANIFICACIÓN VISUAL POR IA
 # =================================================================
 def planificar_visuales(segs, tema):
-    """La IA lee cada segmento y decide el prompt visual en inglés."""
     out = [None] * len(segs)
     for ini in range(0, len(segs), 15):
         lote = segs[ini:ini + 15]
@@ -938,7 +946,6 @@ class RenderEscenas:
         p = min(max(lt / e["dur"], 0), 1) if e["dur"] > 0 else 0
         if not e["zin"]:
             p = 1 - p
-        # Zoom sutil (8%) — el ritmo lento hace que el zoom sea más elegante
         cw = bw / (1 + 0.08 * p)
         ch = cw * bh / bw
         mx, my = bw - cw, bh - ch
@@ -964,7 +971,6 @@ class RenderEscenas:
 def construir_escenas(segs):
     esc = []
     for s in segs:
-        # Dividir cada segmento en imágenes de SEG_ESCENA segundos
         n_imgs = max(1, round(s["dur_audio"] / SEG_ESCENA))
         dur_por_img = s["dur"] / n_imgs
         for k in range(n_imgs):
@@ -995,17 +1001,23 @@ def mezclar_audio(segs, total, fondo, extras=()):
             print(f"⚠️ Fondo: {e}")
     return CompositeAudioClip(capas).set_duration(total), clips
 
-def renderizar(escenas, total, audio, size, salida):
+def renderizar(escenas, total, audio, size, salida, sufijo=""):
     render = RenderEscenas(escenas, size, total)
     video = VideoClip(render.frame, duration=total).set_audio(audio)
+    temp_audio = f"temp_audio_final{sufijo}.m4a"
     video.write_videofile(salida, fps=FPS, codec="libx264", audio_codec="aac",
                           audio_bitrate="192k", threads=4, preset="veryfast",
-                          temp_audiofile="temp_audio_final.m4a",
+                          temp_audiofile=temp_audio,
                           ffmpeg_params=["-crf", "23", "-pix_fmt", "yuv420p",
                                          "-movflags", "+faststart"],
                           logger=None)
     render.cerrar()
     video.close()
+    try:
+        if os.path.exists(temp_audio):
+            os.remove(temp_audio)
+    except Exception:
+        pass
     return salida
 
 # =================================================================
@@ -1102,7 +1114,7 @@ def crear_miniatura(img_path, texto, salida):
         return False
 
 # =================================================================
-# SEO
+# SEO ELITE
 # =================================================================
 def _ascii_tag_yt(t):
     nfd = unicodedata.normalize('NFD', str(t))
@@ -1111,20 +1123,32 @@ def _ascii_tag_yt(t):
     return re.sub(r'\s+', ' ', limpio).strip()
 
 def construir_tags(plan, tema, sugerencias):
+    """Mix elite vidIQ: exactos + broad + long-tail + preguntas."""
     nombre_tema = _ascii_tag_yt(tema["tema"].replace("_", " "))
+
     tags_ia = plan.get("tags", [])
     if isinstance(tags_ia, str):
         tags_ia = [x.strip() for x in tags_ia.split(",")]
-    p1 = list(tags_ia)
-    p2 = [f"psicologia {nombre_tema}", f"estoicismo {nombre_tema}"]
-    p3 = ["psicologia", "estoicismo", "neurociencia", "desarrollo personal",
-          "habitos", "inteligencia emocional", "mentalidad", "productividad"]
-    p4 = list(tema["keywords"]) + list(sugerencias)[:5]
+
+    # Estructura por capas (SEO estratégico)
+    exactos = list(tags_ia)[:5]                          # 5 específicos IA
+    broad = ["psicologia", "estoicismo", "desarrollo personal",
+             "inteligencia emocional", "mentalidad"]      # 5 broad del canal
+    long_tail = [
+        f"psicologia {nombre_tema}",
+        f"estoicismo {nombre_tema}",
+        f"como {nombre_tema}",
+        f"que es {nombre_tema}",
+    ]
+    preguntas = list(sugerencias)[:3]
+    especificos_tema = list(tema["keywords"])[:3]
 
     todos, vistos = [], set()
-    for raw in p1 + p2 + p3 + p4:
+    for raw in exactos + broad + long_tail + preguntas + especificos_tema:
         tag = _ascii_tag_yt(raw)
         if not tag or len(tag) < 2 or len(tag) > 40 or tag in vistos:
+            continue
+        if any(x in tag for x in ("100 real", "veridico", "caso real")):
             continue
         vistos.add(tag)
         todos.append(tag)
@@ -1132,34 +1156,73 @@ def construir_tags(plan, tema, sugerencias):
     resultado, total_chars = [], 0
     for tag in todos:
         costo = len(tag) + 1
-        if total_chars + costo > 450 or len(resultado) >= 18:
+        if total_chars + costo > 460 or len(resultado) >= 20:
             break
         resultado.append(tag)
         total_chars += costo
     print(f"🏷️  Tags ({len(resultado)}): {', '.join(resultado[:6])}...")
     return resultado
 
-def construir_hashtags(tema):
-    hs = ["#Psicologia", "#DesarrolloPersonal", "#Mentalidad"] + tema.get("hashtags", [])[:2] + ["#Estoicismo"]
-    return " ".join(hs[:6])
+def construir_hashtags(tema, plan):
+    """SEO elite: 4-5 hashtags relevantes (no spam). Los 3 primeros son críticos."""
+    base = ["#Psicologia", "#DesarrolloPersonal"]
+    tema_hs = tema.get("hashtags", [])[:2]
+    extra = "#Estoicismo"
+    if "estoic" in tema["tema"].lower() or "estoic" in " ".join(plan.get("palabras_clave", [])).lower():
+        extra = "#MarcoAurelio"
+    hs = base + tema_hs + [extra]
+    vistos = []
+    for h in hs:
+        if h not in vistos:
+            vistos.append(h)
+    return " ".join(vistos[:5])
 
 def construir_descripcion(plan, tema, caps_ts, sugerencias, hashtags):
-    gancho = plan.get("descripcion_gancho", " ").strip() or plan["gancho"]
-    if "psicolog" not in gancho.lower()[:220]:
-        gancho = "Psicología aplicada: " + gancho
+    """
+    Descripción SEO elite:
+    - Línea 1: keyword principal + promesa (aparece en búsqueda, crítico)
+    - Línea 2: hook secundario
+    - Capítulos, sinopsis, CTA, redes, hashtags
+    """
+    kws = plan.get("palabras_clave", [])
+    keyword_principal = kws[0] if kws else tema["tema"].replace("_", " ")
+    dato_c = plan.get("dato_contraintuitivo", "")
+    resumen = plan.get("resumen", "")
+
+    # ⚡ Línea 1 SEO: keyword + promesa (primeros 150 chars críticos)
+    linea1 = f"{keyword_principal.title()}: {dato_c}." if dato_c else f"{keyword_principal.title()}: {resumen[:120]}"
+    # ⚡ Línea 2: promesa específica
+    linea2 = f"En este video te explico {plan.get('gancho', '')[:180]}"
+
     capitulos = "\n".join(f"{ts} {t}" for ts, t in caps_ts)
     rel = ", ".join(sugerencias[:5])
+
     partes = [
-        gancho,
-        f"🔔 Suscríbete para un video nuevo cada día: {CANAL_LINK}?sub_confirmation=1",
+        f"🎯 {linea1}",
+        linea2,
+        f"",
+        f"🔔 SUSCRÍBETE para un video nuevo cada día: {CANAL_LINK}?sub_confirmation=1",
+        f"",
         f"⏰ CAPÍTULOS\n{capitulos}",
-        f"📖 SOBRE ESTE VIDEO\n{plan.get('resumen', '')}",
-        (f"🔎 Temas relacionados: {rel}" if rel else ""),
+        f"",
+        f"📖 SOBRE ESTE VIDEO\n{resumen}",
+        f"",
+        (f"🔎 BÚSQUEDAS RELACIONADAS: {rel}" if rel else ""),
+        f"",
+        f"📱 Sígueme en Facebook: https://www.facebook.com/profile.php?id=61593237382982",
+        f"",
+        f"📚 Otros videos que te pueden interesar:",
+        f"• Cómo recuperar tu dopamina → {CANAL_LINK}/videos",
+        f"• Estoicismo aplicado → {CANAL_LINK}/videos",
     ]
+
     if ACTIVAR_DISCLOSURE_IA:
         partes.append(DISCLOSURE_TEXT.strip())
+
+    partes.append("")
     partes.append(hashtags)
-    desc = "\n\n".join(p for p in partes if p and p.strip())
+
+    desc = "\n".join(p for p in partes if p is not None)
     return desc[:4900]
 
 def generar_srt(segs, ruta):
@@ -1200,14 +1263,32 @@ def deberia_publicar(estado):
         pass
     return True
 
-def proximo_slot(hora, variacion_min, min_offset=0):
+def proximo_slot_batch():
+    """
+    ⚡ v2.1: Garantiza que los 3 slots caigan el MISMO DÍA.
+    Antes cada slot se calculaba independiente → bug de días cruzados.
+    """
     ahora = datetime.now(TZ)
-    slot = ahora.replace(hour=hora, minute=0, second=0, microsecond=0)
-    variacion = random.randint(-variacion_min, variacion_min)
-    slot += timedelta(minutes=variacion + min_offset)
-    if slot - ahora < timedelta(minutes=10):
-        slot += timedelta(days=1)
-    return slot
+    slot_mas_temprano_hoy = (
+        ahora.replace(hour=HORA_LARGO, minute=0, second=0, microsecond=0)
+        - timedelta(minutes=VARIACION_MINUTOS_LARGO)
+    )
+    if slot_mas_temprano_hoy - ahora < timedelta(minutes=10):
+        dia_base = (ahora + timedelta(days=1)).date()
+    else:
+        dia_base = ahora.date()
+
+    dia_dt = datetime.combine(dia_base, datetime.min.time()).replace(tzinfo=TZ)
+
+    def slot(hora, variacion, offset=0):
+        s = dia_dt.replace(hour=hora, minute=0)
+        s += timedelta(minutes=random.randint(-variacion, variacion) + offset)
+        return s
+
+    slot_largo  = slot(HORA_LARGO, VARIACION_MINUTOS_LARGO)
+    slot_short1 = slot(HORA_SHORT_1, VARIACION_MINUTOS_SHORT_1, offset=15)
+    slot_short2 = slot(HORA_SHORT_2, VARIACION_MINUTOS_SHORT_2, offset=15)
+    return slot_largo, slot_short1, slot_short2
 
 def utc_iso(dt):
     return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
@@ -1288,10 +1369,12 @@ def extras_post_subida(youtube, vid, miniatura, srt, comentario):
             print(f"⚠️ Comentario: {e}\n   Para fijar: {comentario}")
 
 # =================================================================
-# SHORTS — 2 versiones
+# SHORTS
 # =================================================================
 def crear_short(segs_orig, fondo, indice, salida="short_final.mp4", modo="gancho"):
-    """modo: 'gancho' (inicio) o 'climax' (parte central)."""
+    """
+    ⚡ v2.1: contenido 28-36s + CTA = 35-42s total (sweet spot vidIQ).
+    """
     segs = [{**s} for s in segs_orig]
     if modo == "gancho":
         candidatos = segs[:8]
@@ -1299,25 +1382,27 @@ def crear_short(segs_orig, fondo, indice, salida="short_final.mp4", modo="gancho
         total_segs = len(segs)
         inicio = max(0, total_segs // 2 - 4)
         candidatos = segs[inicio:inicio + 8]
+
     sel, t = [], 0.0
     for s in candidatos:
-        if sel and t + s["dur"] > 50:
+        if sel and t + s["dur"] > SHORT_CONTENT_MAX:
             break
         sel.append(s)
         t += s["dur"]
-        if t >= 32:
+        if t >= SHORT_CONTENT_MIN:
             break
     if not sel:
         return None
+    print(f"   📱 Short {indice} contenido: {t:.1f}s (+ CTA ≈ {t+6:.1f}s total)")
+
     t0 = 0.0
     for s in sel:
         s["inicio"] = t0
         t0 += s["dur"]
     t = t0
 
-    cta = generar_audio(
-        "La historia completa ya está en el canal. Suscríbete para no perderte la siguiente.",
-        f"cta_{indice}", "conclusion")
+    cta_texto = random.choice(CTA_SHORTS)
+    cta = generar_audio(cta_texto, f"cta_{indice}", "conclusion")
     escenas = construir_escenas(sel)
     extras, total = [], t
     if cta:
@@ -1327,7 +1412,7 @@ def crear_short(segs_orig, fondo, indice, salida="short_final.mp4", modo="gancho
         escenas.append({**ult, "inicio": t, "dur": d + 0.6, "fade": False})
         total = t + d + 0.6
     audio, _ = mezclar_audio(sel, total, fondo, extras)
-    renderizar(escenas, total, audio, (1080, 1920), salida)
+    renderizar(escenas, total, audio, (1080, 1920), salida, sufijo=f"_s{indice}")
     return salida
 
 # =================================================================
@@ -1359,7 +1444,8 @@ def seleccionar_fondo(estado):
 # =================================================================
 def limpiar_temporales():
     for f in os.listdir("."):
-        if f.startswith("temp_") or f in ("video_final.mp4", "short_final.mp4",
+        if f.startswith("temp_") or f in ("video_final.mp4", "short_1.mp4",
+                                          "short_2.mp4", "short_final.mp4",
                                           "miniatura.jpg", "subtitulos.srt"):
             try:
                 os.remove(f)
@@ -1409,9 +1495,9 @@ def main():
         sys.exit(0)
 
     print("=" * 70)
-    print("🧠 CÓDIGO MENTAL - BOT v2.0")
+    print("🧠 CÓDIGO MENTAL - BOT v2.1 ELITE MASTER PREMIUM")
     print(f"📅 {datetime.now(TZ):%Y-%m-%d %H:%M} | 🎤 {VOZ_CANAL['voz']}")
-    print(f"📤 1 Video Largo + 2 Shorts | 🎨 Flux SEG_ESCENA={SEG_ESCENA}s")
+    print(f"📤 1 Video Largo (8-12 min) + 2 Shorts (35-42s) | 🎨 Flux SEG_ESCENA={SEG_ESCENA}s")
     print("=" * 70)
 
     actualizar_rendimiento(youtube, estado)
@@ -1493,7 +1579,6 @@ def main():
     total = construir_timeline(segs)
     print(f"⏱️ Duración final: {total/60:.1f} min")
 
-    # ============ PLANIFICACIÓN VISUAL POR IA + GENERACIÓN FLUX ============
     print("🎨 Planificando visuales con IA...")
     prompts_visuales = planificar_visuales(segs, tema)
 
@@ -1509,7 +1594,6 @@ def main():
             medios.append(ruta)
         s["medios"] = medios
 
-    # ============ CAPÍTULOS TIMESTAMPS ============
     caps_ts = []
     for p in range(n_puntos):
         primero = next((s for s in segs if s["punto"] == p), None)
@@ -1520,12 +1604,14 @@ def main():
     if caps_ts:
         caps_ts[0] = ("00:00", caps_ts[0][1])
 
-    hashtags = construir_hashtags(tema)
+    hashtags = construir_hashtags(tema, plan)
     descripcion = construir_descripcion(plan, tema, caps_ts, sugerencias, hashtags)
     tags = construir_tags(plan, tema, sugerencias)
     srt = generar_srt(segs, "subtitulos.srt")
 
-    # ============ MINIATURA ============
+    print(f"📝 Descripción (primeras 2 líneas):")
+    print("   " + "\n   ".join(descripcion.split("\n")[:2]))
+
     portada = elegir_texto_portada(plan.get("palabras_portada"), titulo)
     escena_mini = str(plan.get("miniatura_escena", "professional psychology cinematic dark"))
     base_mini = generar_imagen_cloudflare(escena_mini + " for thumbnail", "thumb")
@@ -1533,64 +1619,96 @@ def main():
         base_mini = imagen_fallback("thumb")
     miniatura = "miniatura.jpg" if crear_miniatura(base_mini, portada, "miniatura.jpg") else None
 
-    # ============ RENDER VIDEO LARGO ============
     escenas = construir_escenas(segs)
     audio, _ = mezclar_audio(segs, total, fondo)
     print("🎬 Renderizando video largo...")
-    renderizar(escenas, total, audio, (W, H), "video_final.mp4")
+    renderizar(escenas, total, audio, (W, H), "video_final.mp4", sufijo="_largo")
 
-    # ============ PROGRAMACIÓN ============
     if PROGRAMAR_PICO:
-        slot_largo = proximo_slot(HORA_LARGO, VARIACION_MINUTOS_LARGO)
-        slot_short1 = proximo_slot(HORA_SHORT_1, VARIACION_MINUTOS_SHORT_1, min_offset=15)
-        slot_short2 = proximo_slot(HORA_SHORT_2, VARIACION_MINUTOS_SHORT_2, min_offset=15)
+        slot_largo, slot_short1, slot_short2 = proximo_slot_batch()
         print(f"🕖 Video Largo: {slot_largo:%Y-%m-%d %H:%M} CDMX")
-        print(f"📱 Short 1: {slot_short1:%Y-%m-%d %H:%M} CDMX")
-        print(f"📱 Short 2: {slot_short2:%Y-%m-%d %H:%M} CDMX")
+        print(f"📱 Short 1:    {slot_short1:%Y-%m-%d %H:%M} CDMX")
+        print(f"📱 Short 2:    {slot_short2:%Y-%m-%d %H:%M} CDMX")
+        dias = {slot_largo.date(), slot_short1.date(), slot_short2.date()}
+        if len(dias) != 1:
+            print(f"⚠️ ADVERTENCIA: slots en días distintos: {dias}")
+        else:
+            print(f"✅ Los 3 slots están el mismo día: {slot_largo.date()}")
     else:
         slot_largo = slot_short1 = slot_short2 = None
         print("📤 Publicación inmediata")
 
-    # ============ SUBIR VIDEO LARGO ============
     vid = subir_video(youtube, "video_final.mp4", titulo, descripcion, tags,
                       utc_iso(slot_largo) if slot_largo else None)
     comentario = str(plan.get("pregunta_comentario") or "¿Qué opinas? Te leo 👇")
     extras_post_subida(youtube, vid, miniatura, srt, comentario)
 
-    # ============ 2 SHORTS ============
+    # ============ SHORTS ============
     if GENERAR_SHORT:
+        shorts_creados = []
+
         try:
             print("🎞️ Creando Short Versión 1 (Gancho)...")
             s1 = crear_short(segs, fondo, 1, "short_1.mp4", modo="gancho")
-            if s1:
-                titulo_base = str(plan.get("titulo_short") or titulo)[:88]
-                t_short1 = titulo_base + " #Shorts"
-                d_short1 = (f"Video completo 👉 https://youtu.be/{vid}\n\n"
-                            f"Suscríbete: {CANAL_LINK}?sub_confirmation=1\n\n"
-                            f"#Shorts {hashtags}" +
-                            (DISCLOSURE_TEXT if ACTIVAR_DISCLOSURE_IA else ""))
-                subir_video(youtube, "short_1.mp4", t_short1, d_short1,
-                            tags[:15] + ["shorts"], utc_iso(slot_short1) if slot_short1 else None)
-                print(f"✅ Short 1 subido")
+            if not s1 or not os.path.exists(s1):
+                raise RuntimeError("crear_short devolvió None o archivo inexistente")
+            print(f"   ✅ Short 1 renderizado: {os.path.getsize(s1) // 1024} KB")
+
+            titulo_base = str(plan.get("titulo_short") or titulo)[:88]
+            t_short1 = titulo_base + " #Shorts"
+            kws = plan.get("palabras_clave", [])
+            kw_tag = "#" + _ascii_tag_yt(kws[0]).replace(" ", "") if kws else "#Psicologia"
+            d_short1 = (f"{kws[0].title() if kws else 'Psicología'}: {titulo_base[:60]}\n\n"
+                        f"📺 Video completo 👉 https://youtu.be/{vid}\n\n"
+                        f"🔔 Suscríbete: {CANAL_LINK}?sub_confirmation=1\n\n"
+                        f"#Shorts {kw_tag} {hashtags}" +
+                        (DISCLOSURE_TEXT if ACTIVAR_DISCLOSURE_IA else ""))
+            vid_s1 = subir_video(youtube, "short_1.mp4", t_short1, d_short1,
+                                 tags[:15] + ["shorts"],
+                                 utc_iso(slot_short1) if slot_short1 else None)
+            if not vid_s1:
+                raise RuntimeError("subir_video no devolvió ID")
+            print(f"✅ Short 1 subido: https://youtu.be/{vid_s1}")
+            shorts_creados.append(("Short 1", vid_s1))
         except Exception as e:
-            print(f"⚠️ Short 1 falló: {e}")
+            print(f"❌ Short 1 FALLÓ: {type(e).__name__}: {e}")
+            traceback.print_exc()
+
+        gc.collect()
+        time.sleep(3)
 
         try:
             print("🎞️ Creando Short Versión 2 (Clímax)...")
             s2 = crear_short(segs, fondo, 2, "short_2.mp4", modo="climax")
-            if s2:
-                t_short2 = str(plan.get("titulo_short") or titulo)[:80] + " 🤯 #Shorts"
-                d_short2 = (f"Video completo 👉 https://youtu.be/{vid}\n\n"
-                            f"Suscríbete: {CANAL_LINK}?sub_confirmation=1\n\n"
-                            f"#Shorts {hashtags}" +
-                            (DISCLOSURE_TEXT if ACTIVAR_DISCLOSURE_IA else ""))
-                subir_video(youtube, "short_2.mp4", t_short2, d_short2,
-                            tags[:15] + ["shorts"], utc_iso(slot_short2) if slot_short2 else None)
-                print(f"✅ Short 2 subido")
-        except Exception as e:
-            print(f"⚠️ Short 2 falló: {e}")
+            if not s2 or not os.path.exists(s2):
+                raise RuntimeError("crear_short devolvió None o archivo inexistente")
+            print(f"   ✅ Short 2 renderizado: {os.path.getsize(s2) // 1024} KB")
 
-    # ============ GUARDAR ESTADO ============
+            t_short2 = str(plan.get("titulo_short") or titulo)[:80] + " 🤯 #Shorts"
+            d_short2 = (f"{kws[0].title() if kws else 'Psicología'}: {str(plan.get('titulo_short') or titulo)[:60]}\n\n"
+                        f"📺 Video completo 👉 https://youtu.be/{vid}\n\n"
+                        f"🔔 Suscríbete: {CANAL_LINK}?sub_confirmation=1\n\n"
+                        f"#Shorts {kw_tag} {hashtags}" +
+                        (DISCLOSURE_TEXT if ACTIVAR_DISCLOSURE_IA else ""))
+            vid_s2 = subir_video(youtube, "short_2.mp4", t_short2, d_short2,
+                                 tags[:15] + ["shorts"],
+                                 utc_iso(slot_short2) if slot_short2 else None)
+            if not vid_s2:
+                raise RuntimeError("subir_video no devolvió ID")
+            print(f"✅ Short 2 subido: https://youtu.be/{vid_s2}")
+            shorts_creados.append(("Short 2", vid_s2))
+        except Exception as e:
+            print(f"❌ Short 2 FALLÓ: {type(e).__name__}: {e}")
+            traceback.print_exc()
+
+        print("=" * 70)
+        print(f"📊 RESUMEN SHORTS: {len(shorts_creados)}/2 creados")
+        for nombre, sid in shorts_creados:
+            print(f"   ✅ {nombre}: https://youtu.be/{sid}")
+        if len(shorts_creados) < 2:
+            print(f"   ⚠️ Faltan {2 - len(shorts_creados)} short(s). Revisa el log arriba.")
+        print("=" * 70)
+
     ahora = datetime.now(TZ).isoformat()
     guardar_titulo(titulo)
     guardar_tema(tema["tema"])
@@ -1598,6 +1716,7 @@ def main():
         "id": vid, "titulo": titulo, "tema": tema["tema"],
         "formato": formato["nombre"], "perfil": perfil,
         "dato_contraintuitivo": plan.get("dato_contraintuitivo"),
+        "duracion_min": round(total / 60, 1),
         "fecha": ahora,
     })
     estado["videos"] = estado["videos"][-60:]
