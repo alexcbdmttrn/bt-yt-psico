@@ -1,18 +1,40 @@
 # -*- coding: utf-8 -*-
 """
-CÓDIGO MENTAL - Bot v1.0
-Estrategia: 1 Video Largo (7-9 min) + 2 Shorts de embudo con horarios variables.
-Fuente de imágenes: Cloudflare (Principal) -> Pexels (Fallback) -> Local (Fallback)
+CÓDIGO MENTAL - Bot v2.0
+Fusionado con arquitectura de élite de Sombras de Medianoche v6.4:
+- Flux via Cloudflare (@cf/black-forest-labs/flux-1-schnell) — anatomía correcta
+- Ritmo cinematográfico SEG_ESCENA=14s — oculta imperfecciones de IA
+- Planificación visual dirigida por IA (planificar_consultas)
+- Anti-deformidad automática en todos los prompts
+- Sistema de puntuación de títulos con bonus "dato_contraintuitivo"
+- 1 video largo + 2 shorts programados con horarios variables
 """
-import asyncio, bisect, json, os, random, re, sys, time, traceback, unicodedata, ssl, socket
+import asyncio
+import bisect
+import json
+import os
+import random
+import re
+import sys
+import time
+import traceback
+import unicodedata
+import ssl
+import socket
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
-import edge_tts, numpy as np, requests, urllib3
+import edge_tts
+import numpy as np
+import requests
+import urllib3
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaFileUpload
-from moviepy.editor import (AudioFileClip, CompositeAudioClip, VideoClip, VideoFileClip, concatenate_audioclips)
+from moviepy.editor import (
+    AudioFileClip, CompositeAudioClip, VideoClip, VideoFileClip,
+    concatenate_audioclips,
+)
 from PIL import Image, ImageDraw, ImageEnhance, ImageFilter, ImageFont, ImageOps
 
 try:
@@ -26,100 +48,220 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 # CONFIGURACIÓN
 # =================================================================
 TZ = ZoneInfo("America/Mexico_City")
+
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
-DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
-DEEPSEEK_URL = "https://api.deepseek.com/v1/chat/completions"
-PEXELS_API_KEY = os.getenv("PEXELS_API_KEY")
+DEEPSEEK_MODEL   = os.getenv("DEEPSEEK_MODEL") or "deepseek-chat"
+DEEPSEEK_URL     = "https://api.deepseek.com/v1/chat/completions"
+
 CLOUDFLARE_ACCOUNT_ID = os.getenv("CLOUDFLARE_ACCOUNT_ID")
-CLOUDFLARE_API_TOKEN = os.getenv("CLOUDFLARE_API_TOKEN")
-CLOUDFLARE_MODEL = "@cf/stabilityai/stable-diffusion-xl-base-1.0"
+CLOUDFLARE_API_TOKEN  = os.getenv("CLOUDFLARE_API_TOKEN")
+CLOUDFLARE_MODEL      = "@cf/black-forest-labs/flux-1-schnell"
+
 YOUTUBE_USER_TOKEN = json.loads(os.getenv("YOUTUBE_USER_TOKEN") or "{}")
-PLAYLIST_ID = os.getenv("YOUTUBE_PLAYLIST_ID", "")
-CANAL_LINK = "https://www.youtube.com/@codigomentalnovisible"
+PLAYLIST_ID        = os.getenv("YOUTUBE_PLAYLIST_ID", "")
+CANAL_LINK         = "https://www.youtube.com/@codigomentalnovisible"
 
-MUSICA_ESTADO_FILE = "estado_musica.json"
-TITULOS_LARGOS_FILE = "titulos_publicados.json"
-TEMAS_SHORTS_FILE = "temas_shorts.json"
+ESTADO_FILE  = "estado_shorts.json"
+TITULOS_FILE = "titulos_publicados.json"
+TEMAS_FILE   = "temas_shorts.json"
 
-# Duración optimizada para psicología/desarrollo personal
-DURACION_MINIMA_SEGUNDOS = 420   # 7 min mínimo
-DURACION_MAXIMA_SEGUNDOS = 540   # 9 min máximo
-MAX_INTENTOS_EXPANSION = 2
-NUM_CAPITULOS = 5  # 5 puntos clave por video
+DURACION_MINIMA_SEGUNDOS = 420   # 7 min
+DURACION_MAXIMA_SEGUNDOS = 660   # 11 min
+NUM_PUNTOS               = 5
+MAX_INTENTOS_EXPANSION   = 1
 
-SEG_MAX_PALABRAS = 60
-SEG_ESCENA = 7.0
-W, H, FPS = 1920, 1080, 24
-VOL_FONDO = 0.08
-USAR_VIDEOS = os.getenv("USAR_VIDEOS", "true").lower() == "true"
-GENERAR_SHORT = os.getenv("GENERAR_SHORT", "true").lower() == "true"
-PROGRAMAR_PICO = os.getenv("PROGRAMAR_PICO", "true").lower() == "true"
-INTERVALO_MIN_HORAS = float(os.getenv("INTERVALO_MIN_HORAS", "24"))
-ACTIVAR_DISCLOSURE_IA = True
+SEG_MAX_PALABRAS = 45    # segmentos de audio cortos = audio más limpio
+SEG_ESCENA       = 14.0  # ⚡ 1 imagen cada 14s — ritmo cinematográfico
+W, H, FPS        = 1920, 1080, 24
+VOL_FONDO        = 0.10
+USAR_IMAGENES_IA = os.getenv("USAR_IMAGENES_IA", "true").lower() == "true"
+GENERAR_SHORT    = os.getenv("GENERAR_SHORT", "true").lower() == "true"
+PROGRAMAR_PICO   = os.getenv("PROGRAMAR_PICO", "true").lower() == "true"
 
-DISCLOSURE_TEXT = "\n\n⚠️ Contenido educativo generado con asistencia de IA para una mayor claridad."
-
-# Voz femenina principal + respaldos
-VOZ_CANAL = {"voz": "es-MX-DaliaNeural", "tono": "+2Hz"}
-VOCES_RESPALDO = ["es-MX-DaliaNeural", "es-ES-ElviraNeural", "es-US-PalomaNeural", "es-MX-BeatrizNeural"]
-
-RATE_ETAPA = {"gancho": "+10%", "contexto": "+5%", "desarrollo": "+2%", "conclusion": "-3%"}
-PAUSA_ETAPA = {"gancho": 0.3, "contexto": 0.4, "desarrollo": 0.5, "conclusion": 0.6}
-PROB_VIDEO = {"gancho": 0.7, "contexto": 0.6, "desarrollo": 0.5, "conclusion": 0.4}
-
-FUENTE_URL = "https://raw.githubusercontent.com/google/fonts/main/ofl/anton/Anton-Regular.ttf"
-# NOTA: Renombra tus archivos MP3 actuales a estos nombres o actualiza esta lista con tus nombres actuales
-FONDOS_DISPONIBLES = [
-    "Astral Alignment.mp3",
-    "Astral Zenith.mp3",
-    "Celestial Drift.mp3",
-    "Celestial Drift (1).mp3",
-    "Sylvan Sanctuary.mp3",
-    "Verdant Stream.mp3"
-]
-ESTILO_CANAL = "minimalist dark aesthetic, cinematic lighting, professional photography, 8k quality, moody atmosphere, sharp focus"
-
-# =================================================================
-# HORARIOS CON VARIACIÓN (Estrategia 1 Largo + 2 Shorts)
-# =================================================================
-HORA_LARGO = int(os.getenv("HORA_LARGO", "8"))
+HORA_LARGO              = int(os.getenv("HORA_LARGO", "8"))
 VARIACION_MINUTOS_LARGO = int(os.getenv("VARIACION_MINUTOS_LARGO", "30"))
-HORA_SHORT_1 = int(os.getenv("HORA_SHORT_1", "10"))
+HORA_SHORT_1            = int(os.getenv("HORA_SHORT_1", "10"))
 VARIACION_MINUTOS_SHORT_1 = int(os.getenv("VARIACION_MINUTOS_SHORT_1", "45"))
-HORA_SHORT_2 = int(os.getenv("HORA_SHORT_2", "15"))
+HORA_SHORT_2            = int(os.getenv("HORA_SHORT_2", "15"))
 VARIACION_MINUTOS_SHORT_2 = int(os.getenv("VARIACION_MINUTOS_SHORT_2", "60"))
+INTERVALO_MIN_HORAS     = float(os.getenv("INTERVALO_MIN_HORAS", "20"))
+ACTIVAR_DISCLOSURE_IA   = True
 
-def calcular_slot_con_variacion(hora_base, variacion_minutos):
-    ahora = datetime.now(TZ)
-    slot_base = ahora.replace(hour=hora_base, minute=0, second=0, microsecond=0)
-    if slot_base - ahora < timedelta(minutes=10):
-        slot_base += timedelta(days=1)
-    variacion = random.randint(-variacion_minutos, variacion_minutos)
-    return slot_base + timedelta(minutes=variacion)
+DISCLOSURE_TEXT = (
+    "\n\n⚠️ Este contenido es elaborado con asistencia de Inteligencia Artificial "
+    "para garantizar la máxima claridad, precisión y calidad visual."
+)
+
+VOZ_CANAL = {"voz": "es-MX-DaliaNeural", "tono": "+0Hz"}
+VOCES_RESPALDO = ["es-MX-DaliaNeural", "es-MX-JorgeNeural", "es-ES-ElviraNeural",
+                  "es-US-PalomaNeural", "es-CO-SalomeNeural"]
+RATE_ETAPA  = {"gancho": "+8%", "contexto": "+5%", "desarrollo": "+4%", "conclusion": "+2%"}
+PAUSA_ETAPA = {"gancho": 0.4,   "contexto": 0.5,  "desarrollo": 0.45, "conclusion": 0.7}
+
+FONDOS_DISPONIBLES = [
+    "Celestial Drift.mp3", "Astral Alignment.mp3", "Deep Focus.mp3",
+    "Silent Mind.mp3", "Inner Cosmos.mp3", "Zenith.mp3",
+]
+FUENTE_URL = "https://raw.githubusercontent.com/google/fonts/main/ofl/anton/Anton-Regular.ttf"
 
 # =================================================================
-# TEMAS — PSICOLOGÍA, ESTOICISMO Y DESARROLLO PERSONAL
+# TEMAS — PSICOLOGÍA, ESTOICISMO, NEUROCIENCIA
 # =================================================================
 TEMAS = [
-    {"tema": "manipulacion_sutil", "seed": "señales de persona manipuladora psicología", "angulo": "Frases y comportamientos invisibles que usan las personas tóxicas para controlar sin que lo notes.", "keywords": ["manipulación", "narcisismo", "lenguaje corporal", "psicología oscura"], "contextos": ["oficina", "relación de pareja", "amistad tóxica", "familia"], "visuales": ["person talking seriously", "subtle facial expression", "business meeting tension", "shadow face silhouette"], "hashtags": ["#Psicologia", "#BanderasRojas", "#Manipulacion"], "categoria": "psicologia"},
-    {"tema": "inteligencia_emocional", "seed": "signos de baja inteligencia emocional", "angulo": "Rasgos cotidianos que delatan a alguien que no sabe gestionar sus emociones y sabotea su entorno.", "keywords": ["inteligencia emocional", "madurez", "comportamiento", "psicología"], "contextos": ["trabajo", "relaciones", "estrés", "conflictos"], "visuales": ["calm person meditating", "brain abstract", "person writing journal", "peaceful nature"], "hashtags": ["#InteligenciaEmocional", "#DesarrolloPersonal"], "categoria": "psicologia"},
-    {"tema": "lenguaje_corporal", "seed": "lo que tu cuerpo dice de ti psicologia", "angulo": "Señales no verbales que revelan más sobre tu personalidad de lo que imaginas.", "keywords": ["lenguaje corporal", "psicología", "personalidad", "comunicación"], "contextos": ["entrevista", "cita", "reunión", "conversación"], "visuales": ["person walking confident", "body language posture", "hand gestures talking", "eye contact closeup"], "hashtags": ["#LenguajeCorporal", "#Psicologia"], "categoria": "psicologia"},
-    {"tema": "estoicismo_moderno", "seed": "reglas de marco aurelio para la vida moderna", "angulo": "Principios antiguos aplicados a problemas actuales: ansiedad, redes sociales y opiniones ajenas.", "keywords": ["estoicismo", "marco aurelio", "seneca", "paz mental", "filosofía"], "contextos": ["vida moderna", "estrés laboral", "relaciones", "toma de decisiones"], "visuales": ["roman statue dark", "minimalist greek architecture", "stormy sea calm boat", "ancient library"], "hashtags": ["#Estoicismo", "#FilosofiaPractica", "#PazMental"], "categoria": "estoicismo"},
-    {"tema": "arte_del_silencio", "seed": "el poder del silencio psicología", "angulo": "Por qué no reaccionar inmediatamente te da una ventaja psicológica enorme sobre los demás.", "keywords": ["silencio", "poder", "psicología", "control emocional"], "contextos": ["conflicto", "negociación", "crítica", "presión social"], "visuales": ["person looking out window rain", "calm lake morning", "minimalist dark room", "meditation silhouette"], "hashtags": ["#PoderDelSilencio", "#Psicologia"], "categoria": "estoicismo"},
-    {"tema": "disciplina_personal", "seed": "hábitos de personas altamente disciplinadas", "angulo": "Las rutinas invisibles que separan a quienes logran metas de quienes solo las sueñan.", "keywords": ["disciplina", "hábitos", "productividad", "éxito"], "contextos": ["mañana", "trabajo", "ejercicio", "estudio"], "visuales": ["person waking up early", "morning routine coffee", "gym workout dark", "desk organized"], "hashtags": ["#Disciplina", "#Habitos", "#Exito"], "categoria": "estoicismo"},
-    {"tema": "tipos_inteligencia", "seed": "los 8 tipos de inteligencia multiple", "angulo": "El sistema educativo ignora estas inteligencias; probablemente tienes una que te hace único.", "keywords": ["inteligencia multiple", "cerebro", "neurociencia", "aprendizaje"], "contextos": ["educación", "trabajo", "relaciones", "creatividad"], "visuales": ["brain glowing neurons", "person solving puzzle", "abstract network connections", "lightbulb idea"], "hashtags": ["#Neurociencia", "#Inteligencia", "#Cerebro"], "categoria": "neurociencia"},
-    {"tema": "detox_dopamina", "seed": "que pasa en tu cerebro sin redes sociales", "angulo": "La ciencia detrás de lo que le sucede a tu concentración y ánimo cuando eliminas los estímulos digitales.", "keywords": ["dopamina", "adiccion tecnologia", "concentracion", "salud mental"], "contextos": ["trabajo", "estudio", "relaciones", "tiempo libre"], "visuales": ["person putting phone away", "digital detox", "calm forest walk", "brain resetting abstract"], "hashtags": ["#DetoxDigital", "#SaludMental", "#Dopamina"], "categoria": "neurociencia"},
-    {"tema": "memoria_aprendizaje", "seed": "como aprender 10 veces mas rapido", "angulo": "Técnicas respaldadas por neurociencia para absorber información y retenerla a largo plazo.", "keywords": ["memoria", "aprendizaje", "neurociencia", "estudio"], "contextos": ["estudiantes", "profesionales", "autoaprendizaje", "habilidades"], "visuales": ["person reading book", "brain synapses", "study desk organized", "mind map abstract"], "hashtags": ["#Aprendizaje", "#Memoria", "#Neurociencia"], "categoria": "neurociencia"},
-    {"tema": "habitos_atomicos", "seed": "resumen habitos atomicos james clear", "angulo": "El sistema de 2 minutos y la regla del 1% que hace que los hábitos pequeños generen resultados masivos.", "keywords": ["habitos atomicos", "productividad", "james clear", "mejora personal"], "contextos": ["rutina diaria", "trabajo", "salud", "finanzas"], "visuales": ["person writing planner", "domino effect", "morning routine coffee", "minimalist desk"], "hashtags": ["#HabitosAtomicos", "#Productividad", "#Exito"], "categoria": "productividad"},
-    {"tema": "padre_rico_padre_pobre", "seed": "verdades ocultas padre rico padre pobre", "angulo": "Las 3 ideas más malinterpretadas del libro y cómo aplicarlas realmente sin caer en estafas.", "keywords": ["padre rico padre pobre", "finanzas personales", "robert kiyosaki", "dinero"], "contextos": ["inversiones", "deudas", "ahorro", "emprendimiento"], "visuales": ["money growing plant", "person reading finance book", "city skyline night", "piggy bank broken"], "hashtags": ["#FinanzasPersonales", "#PadreRico", "#EducacionFinanciera"], "categoria": "productividad"},
-    {"tema": "deep_work", "seed": "trabajo profundo cal newport resumen", "angulo": "Cómo trabajar 4 horas con enfoque total produce más que 8 horas de trabajo distraído.", "keywords": ["deep work", "concentracion", "cal newport", "productividad"], "contextos": ["oficina", "freelance", "estudio", "creatividad"], "visuales": ["person focused working", "minimalist desk laptop", "noise cancelling headphones", "timer pomodoro"], "hashtags": ["#DeepWork", "#Productividad", "#Concentracion"], "categoria": "productividad"},
+    {"tema": "detox_dopamina", "seed": "detox dopamina",
+     "angulo": "Cómo resetear tu cerebro en 30 días y recuperar la motivación real.",
+     "keywords": ["detox dopamina", "dopamina", "motivación", "adicción", "enfoque"],
+     "contextos": ["vida moderna", "smartphone", "adicción digital", "productividad"],
+     "hashtags": ["#Dopamina", "#Neurociencia"]},
+
+    {"tema": "lenguaje_corporal", "seed": "lenguaje corporal",
+     "angulo": "Las señales no verbales que revelan lo que la gente realmente piensa.",
+     "keywords": ["lenguaje corporal", "señales", "comunicación no verbal", "psicología"],
+     "contextos": ["oficina", "negociación", "reunión", "entrevista"],
+     "hashtags": ["#LenguajeCorporal", "#Psicologia"]},
+
+    {"tema": "psicologia_oscura", "seed": "psicología oscura",
+     "angulo": "Las técnicas de manipulación que usan los manipuladores y cómo defenderte.",
+     "keywords": ["psicología oscura", "manipulación", "narcisismo", "gaslighting"],
+     "contextos": ["relaciones", "trabajo", "familia", "amistad"],
+     "hashtags": ["#PsicologiaOscura", "#Manipulacion"]},
+
+    {"tema": "estoicismo", "seed": "estoicismo",
+     "angulo": "Cómo aplicar la sabiduría de Marco Aurelio al caos moderno.",
+     "keywords": ["estoicismo", "marco aurelio", "seneca", "filosofia", "disciplina"],
+     "contextos": ["vida moderna", "trabajo", "relaciones", "fracaso"],
+     "hashtags": ["#Estoicismo", "#MarcoAurelio"]},
+
+    {"tema": "habitos_atomicos", "seed": "hábitos atómicos",
+     "angulo": "Cómo construir hábitos que duran y eliminar los que te destruyen.",
+     "keywords": ["hábitos", "habitos atomicos", "productividad", "rutinas"],
+     "contextos": ["mañana", "trabajo", "ejercicio", "estudio"],
+     "hashtags": ["#Habitos", "#Productividad"]},
+
+    {"tema": "ansiedad", "seed": "ansiedad",
+     "angulo": "Cómo calmar tu mente ansiosa con técnicas basadas en neurociencia.",
+     "keywords": ["ansiedad", "estrés", "respiración", "mindfulness"],
+     "contextos": ["vida diaria", "trabajo", "relaciones", "insomnio"],
+     "hashtags": ["#Ansiedad", "#SaludMental"]},
+
+    {"tema": "concentracion", "seed": "concentración profunda",
+     "angulo": "Cómo recuperar la capacidad de concentrarte en un mundo de distracciones.",
+     "keywords": ["concentración", "foco", "deep work", "productividad"],
+     "contextos": ["trabajo", "estudio", "oficina", "home office"],
+     "hashtags": ["#Concentracion", "#DeepWork"]},
+
+    {"tema": "inteligencia_emocional", "seed": "inteligencia emocional",
+     "angulo": "Cómo dominar tus emociones en lugar de que ellas te dominen a ti.",
+     "keywords": ["inteligencia emocional", "emociones", "autocontrol", "empatia"],
+     "contextos": ["relaciones", "trabajo", "familia", "conflicto"],
+     "hashtags": ["#InteligenciaEmocional", "#Emociones"]},
+
+    {"tema": "sesgos_cognitivos", "seed": "sesgos cognitivos",
+     "angulo": "Los sesgos que tu cerebro usa para engañarte todos los días.",
+     "keywords": ["sesgos cognitivos", "pensamiento", "psicología", "decisión"],
+     "contextos": ["decisiones", "compras", "relaciones", "política"],
+     "hashtags": ["#SesgosCognitivos", "#Psicologia"]},
+
+    {"tema": "memoria", "seed": "técnicas de memoria",
+     "angulo": "Cómo aprender más rápido usando el método de los campeones de memoria.",
+     "keywords": ["memoria", "aprendizaje", "estudio", "técnicas"],
+     "contextos": ["estudio", "examen", "trabajo", "idiomas"],
+     "hashtags": ["#Memoria", "#Aprendizaje"]},
+
+    {"tema": "sueno", "seed": "sueño y rendimiento",
+     "angulo": "Cómo dormir mejor para rendir al máximo al día siguiente.",
+     "keywords": ["sueño", "dormir bien", "descanso", "rendimiento"],
+     "contextos": ["recámara", "rutina nocturna", "insomnio", "energía"],
+     "hashtags": ["#Sueño", "#Descanso"]},
+
+    {"tema": "disciplina", "seed": "disciplina y fuerza de voluntad",
+     "angulo": "Cómo construir una disciplina que no depende de la motivación.",
+     "keywords": ["disciplina", "fuerza de voluntad", "autocontrol", "consistencia"],
+     "contextos": ["vida diaria", "ejercicio", "trabajo", "hábitos"],
+     "hashtags": ["#Disciplina", "#Autocontrol"]},
+
+    {"tema": "banderas_rojas", "seed": "banderas rojas en relaciones",
+     "angulo": "Las señales de alarma que debes detectar antes de que sea tarde.",
+     "keywords": ["banderas rojas", "relaciones toxicas", "narcisismo", "manipulacion"],
+     "contextos": ["pareja", "amistad", "trabajo", "familia"],
+     "hashtags": ["#BanderasRojas", "#Relaciones"]},
+
+    {"tema": "procrastinacion", "seed": "procrastinación",
+     "angulo": "Por qué procrastinas y cómo hackear tu cerebro para dejar de hacerlo.",
+     "keywords": ["procrastinación", "productividad", "postergar", "motivacion"],
+     "contextos": ["trabajo", "estudio", "tareas", "metas"],
+     "hashtags": ["#Procrastinacion", "#Productividad"]},
+
+    {"tema": "soledad", "seed": "soledad y crecimiento",
+     "angulo": "Cómo transformar la soledad en tu mayor ventaja competitiva.",
+     "keywords": ["soledad", "autoconocimiento", "crecimiento", "independencia"],
+     "contextos": ["vida moderna", "trabajo remoto", "transiciones", "silenzio"],
+     "hashtags": ["#Soledad", "#Crecimiento"]},
+
+    {"tema": "carisma", "seed": "carisma y presencia",
+     "angulo": "Los hábitos que hacen que las personas magnéticas te escuchen.",
+     "keywords": ["carisma", "presencia", "influencia", "confianza"],
+     "contextos": ["reuniones", "presentaciones", "entrevistas", "networking"],
+     "hashtags": ["#Carisma", "#Influencia"]},
+
+    {"tema": "dinero_mentalidad", "seed": "mentalidad de dinero",
+     "angulo": "Los patrones psicológicos que separan a ricos de pobres.",
+     "keywords": ["mentalidad de dinero", "riqueza", "psicología financiera", "abundancia"],
+     "contextos": ["finanzas", "inversión", "trabajo", "hábitos"],
+     "hashtags": ["#Mentalidad", "#Dinero"]},
+
+    {"tema": "estoicismo_amor", "seed": "estoicismo y amor",
+     "angulo": "Cómo amar sin perderte usando la sabiduría estoica.",
+     "keywords": ["estoicismo", "amor", "relaciones", "desapego"],
+     "contextos": ["pareja", "ruptura", "autoconocimiento", "relaciones"],
+     "hashtags": ["#Estoicismo", "#Amor"]},
+
+    {"tema": "mentalidad_crecimiento", "seed": "mentalidad de crecimiento",
+     "angulo": "Cómo cambiar tu mentalidad fija por una de crecimiento (Carol Dweck).",
+     "keywords": ["mentalidad de crecimiento", "fixed mindset", "aprendizaje", "fracaso"],
+     "contextos": ["estudio", "trabajo", "metas", "fracaso"],
+     "hashtags": ["#MentalidadDeCrecimiento", "#Psicologia"]},
+
+    {"tema": "miedo_al_rechazo", "seed": "miedo al rechazo",
+     "angulo": "Cómo superar el miedo a lo que los demás piensan de ti.",
+     "keywords": ["miedo al rechazo", "autoestima", "aprobación", "confianza"],
+     "contextos": ["relaciones", "trabajo", "vida social", "entrevistas"],
+     "hashtags": ["#MiedoAlRechazo", "#Autoestima"]},
 ]
 
+# =================================================================
+# FORMATOS Y PERFILES
+# =================================================================
 FORMATOS_NARRACION = [
-    {"nombre": "lista_educativa", "instruccion": "Estructura de lista numerada. Cada punto debe tener: 1) El nombre del rasgo, 2) Un ejemplo cotidiano y 3) Por qué ocurre psicológicamente. Tono objetivo pero empático."},
-    {"nombre": "caso_de_estudio", "instruccion": "Empieza con una historia breve y anónima de una persona que sufrió las consecuencias de ignorar este tema, y luego desglosa las lecciones aprendidas en puntos clave."},
-    {"nombre": "mito_vs_realidad", "instruccion": "Empieza desmontando una creencia popular ('Todos creen que X, pero la ciencia dice Y'). Luego, desarrolla verdades contraintuitivas que sorprendan al espectador."},
-    {"nombre": "guion_paso_a_paso", "instruccion": "Enfoque 100% práctico. 'Si te pasa X, haz estos pasos exactos'. Sin teoría innecesaria, solo acción directa y aplicable hoy mismo."}
+    {"nombre": "lista_educativa",
+     "instruccion": ("Formato LISTA EDUCATIVA. El narrador presenta los puntos de forma "
+                     "numerada y progresiva, con un ejemplo cotidiano por punto. "
+                     "Cada punto debe sentirse autoconclusivo pero enlazado al tema global.")},
+    {"nombre": "caso_de_estudio",
+     "instruccion": ("Formato CASO DE ESTUDIO. Presenta a una persona concreta (nombre, "
+                     "edad, contexto) y analiza su situación desde la psicología. "
+                     "El espectador debe identificarse con el caso.")},
+    {"nombre": "explicacion_cientifica",
+     "instruccion": ("Formato EXPLICACIÓN CIENTÍFICA. Cita estudios, autores y mecanismos "
+                     "cerebrales. Explica POR QUÉ funciona algo, no solo QUÉ funciona. "
+                     "Tono accesible pero con autoridad.")},
+    {"nombre": "historia_personal",
+     "instruccion": ("Formato HISTORIA PERSONAL. Narra en primera persona un cambio real "
+                     "del narrador (ficticio pero creíble). Conecta la vivencia con la ciencia.")},
+    {"nombre": "analogia_poderosa",
+     "instruccion": ("Formato ANALOGÍA PODEROSA. Explora el tema a través de una metáfora "
+                     "central (jardín, máquina, ciudad, etc.) que hace tangible lo abstracto.")},
+]
+
+PERFILES_NARRADOR = [
+    "psicólogo clínico con consulta privada",
+    "coach de alto rendimiento",
+    "profesor de filosofía aplicada",
+    "neurocientífico divulgador",
+    "terapeuta cognitivo-conductual",
+    "escritor de desarrollo personal",
+    "emprendedor serial con background en psicología",
+    "ex-monje que estudió estoicismo",
 ]
 
 # =================================================================
@@ -127,38 +269,47 @@ FORMATOS_NARRACION = [
 # =================================================================
 def cargar_json(ruta, default):
     try:
-        with open(ruta, "r", encoding="utf-8") as f: return json.load(f)
-    except Exception: return default
+        with open(ruta, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return default
 
 def guardar_json(ruta, data):
     tmp = ruta + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f: json.dump(data, f, indent=2, ensure_ascii=False)
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
     os.replace(tmp, ruta)
 
 def cargar_estado():
-    estado = cargar_json(MUSICA_ESTADO_FILE, {})
+    estado = cargar_json(ESTADO_FILE, {})
     estado.setdefault("ultimos_fondos", [])
     estado.setdefault("videos", [])
     estado.setdefault("temas_recientes", [])
     return estado
 
 def parsear_json(texto):
-    if not texto: raise ValueError("respuesta vacía")
+    if not texto:
+        raise ValueError("respuesta vacía")
     t = re.sub(r"```(?:json)?", " ", texto, flags=re.I)
     i, j = t.find("{"), t.rfind("}")
-    if i == -1 or j == -1: raise ValueError("sin JSON")
+    if i == -1 or j == -1:
+        raise ValueError("sin JSON")
     t = t[i:j + 1]
     t = re.sub(r",\s*([}\]])", r"\1", t)
     if json5:
-        try: return json5.loads(t)
-        except Exception: pass
+        try:
+            return json5.loads(t)
+        except Exception:
+            pass
     return json.loads(t, strict=False)
 
 def llm(prompt, temperature=0.8, max_tokens=1500, json_mode=False, system=None, intentos=3):
     headers = {"Authorization": f"Bearer {DEEPSEEK_API_KEY}", "Content-Type": "application/json"}
     msgs = ([{"role": "system", "content": system}] if system else []) + [{"role": "user", "content": prompt}]
-    payload = {"model": DEEPSEEK_MODEL, "messages": msgs, "temperature": temperature, "max_tokens": max_tokens}
-    if json_mode: payload["response_format"] = {"type": "json_object"}
+    payload = {"model": DEEPSEEK_MODEL, "messages": msgs,
+               "temperature": temperature, "max_tokens": max_tokens}
+    if json_mode:
+        payload["response_format"] = {"type": "json_object"}
     for i in range(intentos):
         try:
             r = requests.post(DEEPSEEK_URL, headers=headers, json=payload, timeout=150)
@@ -169,63 +320,53 @@ def llm(prompt, temperature=0.8, max_tokens=1500, json_mode=False, system=None, 
             time.sleep(5 * (i + 1))
     return None
 
-def descargar(url, ruta, max_bytes=20 * 1024 * 1024):
-    try:
-        with requests.get(url, stream=True, timeout=40) as r:
-            r.raise_for_status()
-            total = 0
-            with open(ruta, "wb") as f:
-                for chunk in r.iter_content(1 << 16):
-                    total += len(chunk)
-                    if total > max_bytes: raise ValueError("archivo demasiado grande")
-                    f.write(chunk)
-            return os.path.getsize(ruta) > 1000
-    except Exception as e:
-        print(f"⚠️ Descarga fallida: {e}")
-        if os.path.exists(ruta): os.remove(ruta)
-        return False
-
 def fmt_ts(seg):
     seg = int(seg)
     h, m, s = seg // 3600, seg % 3600 // 60, seg % 60
     return f"{h}:{m:02d}:{s:02d}" if h else f"{m:02d}:{s:02d}"
 
 # =================================================================
-# HISTORIAL
+# HISTORIAL DE TÍTULOS Y TEMAS
 # =================================================================
-def titulo_largo_ya_publicado(titulo):
-    data = cargar_json(TITULOS_LARGOS_FILE, {"titulos": []})
+def titulo_ya_publicado(titulo):
+    data = cargar_json(TITULOS_FILE, {"titulos": []})
     n = titulo.lower().strip()
     p1 = set(re.findall(r"\w+", n))
     for t in data["titulos"]:
         tn = t.lower().strip()
-        if n == tn: return True
+        if n == tn:
+            return True
         p2 = set(re.findall(r"\w+", tn))
-        if len(p1) > 3 and len(p2) > 3 and len(p1 & p2) / min(len(p1), len(p2)) > 0.7: return True
+        if len(p1) > 3 and len(p2) > 3 and len(p1 & p2) / min(len(p1), len(p2)) > 0.7:
+            return True
     return False
 
-def guardar_titulo_largo(titulo):
-    data = cargar_json(TITULOS_LARGOS_FILE, {"titulos": []})
-    if titulo not in data["titulos"]: data["titulos"].append(titulo)
-    guardar_json(TITULOS_LARGOS_FILE, data)
+def guardar_titulo(titulo):
+    data = cargar_json(TITULOS_FILE, {"titulos": []})
+    if titulo not in data["titulos"]:
+        data["titulos"].append(titulo)
+    data["titulos"] = data["titulos"][-100:]
+    guardar_json(TITULOS_FILE, data)
 
 def tema_ya_usado(tema, umbral=0.5):
-    data = cargar_json(TEMAS_SHORTS_FILE, {"temas": []})
+    data = cargar_json(TEMAS_FILE, {"temas": []})
     nuevas = set(re.findall(r"\w+", str(tema).lower()))
     for antiguo in data["temas"][-20:]:
-        if isinstance(antiguo, dict): antiguo = antiguo.get("tema", "")
-        if not isinstance(antiguo, str) or len(antiguo) > 80: continue
+        if not isinstance(antiguo, str) or len(antiguo) > 80:
+            continue
         viejas = set(re.findall(r"\w+", antiguo.lower()))
         union = nuevas | viejas
-        if union and len(nuevas & viejas) / len(union) > umbral: return True
+        if union and len(nuevas & viejas) / len(union) > umbral:
+            return True
     return False
 
 def guardar_tema(tema):
-    data = cargar_json(TEMAS_SHORTS_FILE, {"temas": []})
+    data = cargar_json(TEMAS_FILE, {"temas": []})
     data["temas"] = [t for t in data["temas"] if isinstance(t, str) and len(t) < 80]
-    if isinstance(tema, str) and len(tema) < 80 and tema not in data["temas"]: data["temas"].append(tema)
+    if isinstance(tema, str) and len(tema) < 80 and tema not in data["temas"]:
+        data["temas"].append(tema)
     data["temas"] = data["temas"][-20:]
-    guardar_json(TEMAS_SHORTS_FILE, data)
+    guardar_json(TEMAS_FILE, data)
 
 # =================================================================
 # YOUTUBE
@@ -235,36 +376,47 @@ def crear_cliente_youtube():
         creds = Credentials.from_authorized_user_info(YOUTUBE_USER_TOKEN)
         return build("youtube", "v3", credentials=creds)
     except Exception as e:
-        print(f"⚠️ No se pudo crear cliente YouTube: {e}")
+        print(f"⚠️ YouTube cliente: {e}")
         return None
 
 def sugerencias_youtube(seed):
     try:
-        r = requests.get("https://suggestqueries.google.com/complete/search", timeout=10, params={"client": "firefox", "ds": "yt", "hl": "es", "gl": "mx", "q": seed})
+        r = requests.get("https://suggestqueries.google.com/complete/search", timeout=10,
+                         params={"client": "firefox", "ds": "yt", "hl": "es", "gl": "mx", "q": seed})
         return [s for s in r.json()[1] if isinstance(s, str)][:8]
-    except Exception: return []
+    except Exception:
+        return []
 
 def puntuar_demanda(youtube, consulta):
-    if youtube is None: return None
+    if youtube is None:
+        return None
     try:
         desde = (datetime.now(timezone.utc) - timedelta(days=90)).strftime("%Y-%m-%dT%H:%M:%SZ")
-        r = youtube.search().list(part="id", q=f"psicologia {consulta}", type="video", order="viewCount", publishedAfter=desde, relevanceLanguage="es", regionCode="MX", maxResults=8).execute()
+        q = f"psicología {consulta}"
+        r = youtube.search().list(part="id", q=q, type="video", order="viewCount",
+                                  publishedAfter=desde, relevanceLanguage="es",
+                                  regionCode="MX", maxResults=8).execute()
         ids = [i["id"]["videoId"] for i in r.get("items", [])]
-        if not ids: return 0
+        if not ids:
+            return 0
         s = youtube.videos().list(part="statistics", id=", ".join(ids)).execute()
         vistas = [int(i["statistics"].get("viewCount", 0)) for i in s.get("items", [])]
         return sum(vistas) / len(vistas) if vistas else 0
-    except Exception: return None
+    except Exception:
+        return None
 
 def actualizar_rendimiento(youtube, estado):
     ids = [v["id"] for v in estado["videos"][-30:] if v.get("id")]
-    if not ids or youtube is None: return
+    if not ids or youtube is None:
+        return
     try:
         r = youtube.videos().list(part="statistics", id=", ".join(ids)).execute()
         vistas = {i["id"]: int(i["statistics"].get("viewCount", 0)) for i in r.get("items", [])}
         for v in estado["videos"]:
-            if v.get("id") in vistas: v["vistas"] = vistas[v["id"]]
-    except Exception: pass
+            if v.get("id") in vistas:
+                v["vistas"] = vistas[v["id"]]
+    except Exception:
+        pass
 
 def elegir_tema(estado, youtube):
     recientes = estado["temas_recientes"][-6:]
@@ -272,185 +424,293 @@ def elegir_tema(estado, youtube):
     candidatos = random.sample(pool, min(5, len(pool)))
     acum = {}
     for v in estado["videos"]:
-        if "vistas" in v: acum.setdefault(v["tema"], []).append(v["vistas"])
+        if "vistas" in v:
+            acum.setdefault(v["tema"], []).append(v["vistas"])
     rend = {k: sum(x) / len(x) for k, x in acum.items()}
     max_r = max(rend.values()) if rend else 1
     demandas = {t["tema"]: puntuar_demanda(youtube, t["seed"]) for t in candidatos}
     max_d = max([d for d in demandas.values() if d] or [1])
+
     def score(t):
         d = demandas[t["tema"]]
         sd = d / max_d if d else 0.4
         sr = rend[t["tema"]] / max_r if t["tema"] in rend and max_r else 0.6
         return 0.5 * sd + 0.5 * sr + random.uniform(0, 0.2)
+
     elegido = max(candidatos, key=score)
     print(f"🎯 Tema elegido: {elegido['tema']}")
     return elegido
 
 # =================================================================
-# TÍTULOS Y PLAN
+# TÍTULOS — Sistema de puntuación adaptado
 # =================================================================
-GANCHOS = ["nunca", "nadie", "jamás", "solo", "prohibido", "secreto", "descubrí", "encontré", "sobreviví", "qué", "por qué", "cómo", "si ", "cuando"]
-PROHIBIDAS = ["testimonio real", "caso real", "100% real", "verídico", "evidencia", "pruebas"]
-GENERICAS = ["misterio", "leyenda", "relato", "caso", "historia de terror"]
+GANCHOS = [
+    "nunca", "nadie", "jamás", "nadie te", "prohibido", "secreto",
+    "verdad", "nadie quiere", "no te dijeron", "ocultan",
+    "cambia", "rompe", "destruye", "mejor", "peor", "por qué",
+    "cómo", "si ", "cuando", "5 ", "7 ", "3 ", "10 ", "?", "!",
+    "nadie", "evita", "deja de", "empieza a",
+]
+PROHIBIDAS = ["testimonio real", "caso real", "100% real", "verídico", "comprobado",
+              "garantizado", "secreto revelado", "hack", "truco", "trucos"]
+GENERICAS = ["psicologia", "filosofia", "relato", "historia de"]
 
 def limpiar_titulo(t):
     t = t.strip().strip('"').strip("'")
     t = re.sub(r"\s+", " ", t)
-    t = re.sub(r"\s*[-|–]\s*(desarrollo personal|psicología)\s*$", "", t, flags=re.I)
-    return " ".join([w if not w.isupper() or len(w) < 3 else w.capitalize() for w in t.split()])
+    t = re.sub(r"\s*[-|–]\s*psicología.*$", "", t, flags=re.I)
+    t = t.rstrip(".")
+    palabras = t.split()
+    caps = [w for w in palabras if len(re.sub(r"\W", " ", w)) >= 3 and w.isupper()]
+    if len(caps) > 3:
+        keep = set(caps[:2])
+        palabras = [w if (not w.isupper() or w in keep or len(w) < 3) else w.capitalize()
+                    for w in palabras]
+    return " ".join(palabras)
 
-def puntuar_titulo(t):
+def puntuar_titulo(t, dato_contraintuitivo=""):
     s, n, tl = 0, len(t), t.lower()
-    if 45 <= n <= 68: s += 4
-    elif 30 <= n < 45 or 68 < n <= 80: s += 2
-    elif n > 95 or n < 25: s -= 6
-    if re.search(r"\d", t): s += 2
+    if 45 <= n <= 68:
+        s += 4
+    elif 30 <= n < 45 or 68 < n <= 80:
+        s += 2
+    elif n > 95 or n < 25:
+        s -= 6
+    if re.search(r"\d", t):
+        s += 2
     s += min(3, sum(1 for g in GANCHOS if g in tl))
-    if re.search(r'\bsi\b.{1,60}(nunca|no\s)', tl, re.I | re.S): s += 6
+
+    # ★ BONUS: patrón "Si... NUNCA/NO"
+    if re.search(r'\bsi\b.{1,60}(nunca|no\s)', tl, re.I | re.S):
+        s += 6
+    # ★ BONUS: número específico de la lista (5 señales, 7 hábitos, etc.)
+    if re.search(r'\b\d{1,2}\s+(señales|habitos|hábitos|claves|trucos|reglas|formas|maneras|razones)', tl):
+        s += 4
+
+    # ★ BONUS: dato contraintuitivo mencionado (equivalente a "elemento imposible")
+    if dato_contraintuitivo:
+        dc_words = set(re.findall(r"\w+", dato_contraintuitivo.lower())) - {"de", "la", "el", "que", "y", "en", "un", "una", "por", "para", "con", "los", "las"}
+        tit_words = set(re.findall(r"\w+", tl))
+        if len(dc_words & tit_words) >= 2:
+            s += 5
+
+    # ★ BONUS: contradicción / paradoja ("menos", "peor", "nunca", "deja de")
+    if re.search(r'\b(menos|peor|nunca|deja de|evita|no hagas|no debes)\b', tl):
+        s += 3
+
     caps = re.findall(r"\b[A-ZÁÉÍÓÚÑ]{4,}\b", t)
     s += 2 if 1 <= len(caps) <= 2 else (-3 if len(caps) > 3 else 0)
-    if any(p in tl for p in PROHIBIDAS): s -= 8
-    if any(tl.startswith(g) for g in GENERICAS): s -= 6
+    if any(p in tl for p in PROHIBIDAS):
+        s -= 8
+    if any(tl.startswith(g) for g in GENERICAS):
+        s -= 6
+    if "!" in t:
+        s -= 1
     return s
 
-def elegir_titulo(candidatos):
+def elegir_titulo(candidatos, dato_contraintuitivo=""):
     puntuados = []
     for c in candidatos:
-        if not isinstance(c, str): continue
+        if not isinstance(c, str):
+            continue
         base = limpiar_titulo(c)
-        if len(base) < 25 or titulo_largo_ya_publicado(base): continue
-        puntuados.append((puntuar_titulo(base), base))
-    if not puntuados: return None
+        if len(base) < 25 or titulo_ya_publicado(base):
+            continue
+        puntuados.append((puntuar_titulo(base, dato_contraintuitivo), base))
+    if not puntuados:
+        return None
     puntuados.sort(reverse=True)
-    for sc, t in puntuados[:3]: print(f"   📝 [{sc:>2}] {t}")
+    for sc, t in puntuados[:4]:
+        print(f"   📝 [{sc:>2}] {t}")
     return puntuados[0][1][:100]
 
+def elegir_texto_portada(opciones, titulo):
+    pt = set(re.findall(r"\w+", titulo.lower()))
+    mejor = None
+    for o in opciones or []:
+        if not isinstance(o, str):
+            continue
+        o = re.sub(r"[^\w¿?¡! ]", "", o).strip().upper()
+        w = o.split()
+        if not 1 <= len(w) <= 4:
+            continue
+        solape = len({x.lower() for x in w} & pt) / len(w)
+        sc = (3 if len(w) in (2, 3) else 1) - 2 * solape + (1 if "?" in o else 0)
+        if mejor is None or sc > mejor[0]:
+            mejor = (sc, o)
+    return mejor[1] if mejor else "MENTALIDAD"
+
+# =================================================================
+# GENERACIÓN DE CONTENIDO
+# =================================================================
 ESQUEMA_PLAN = """{
- "titulos": ["6 títulos de 45-68 caracteres con ESTRUCTURA DISTINTA. NUNCA termines con '| Desarrollo Personal'. AL MENOS 3 deben incluir el 'dato_contraintuitivo'"],
- "dato_contraintuitivo": "CRÍTICO: un dato que rompe la creencia popular en 3-8 palabras. Ej: 'sonreír más te hace menos feliz', 'la disciplina mata la creatividad', 'leer mucho no te hace inteligente'",
- "gancho": "1-2 frases (máx 35 palabras) que abren con una pregunta directa o afirmación impactante, INCLUYENDO el dato_contraintuitivo",
- "resumen": "sinopsis de 2-3 oraciones de lo que aprenderá el espectador",
+ "titulos": ["6 títulos de 45-68 caracteres con ESTRUCTURA DISTINTA. NUNCA termines con '| Psicología'. AL MENOS 3 deben incluir el dato_contraintuitivo o una contradicción ('menos', 'nunca', 'deja de'). Combina: 'Si [situación], NUNCA [acción]'"],
+ "tema_central": "descripción breve del tema",
+ "anio_estudio": 2023,
+ "protagonista": "nombre de pila del narrador (ej: Daniel, Andrea)",
+ "dato_contraintuitivo": "CRÍTICO: el dato más sorprendente que rompe expectativas. Ej: 'sonreír más te hace menos creíble', 'estudiar más horas reduce el aprendizaje', 'la multitarea baja el CI 10 puntos'. Debe aparecer en AL MENOS 3 de los 6 títulos",
+ "gancho": "1-2 frases (máx 35 palabras) que abren el video con el dato_contraintuitivo en primera persona",
+ "resumen": "sinopsis de 2-3 oraciones sin spoilers",
  "palabras_clave": ["5 keywords SEO en español"],
- "palabras_portada": ["3 opciones de 2-3 palabras EN MAYÚSCULAS para miniatura"],
- "miniatura_escena": "4-6 palabras en inglés para generar imagen en Cloudflare (ej: brain glowing neurons dark)",
- "descripcion_gancho": "2 líneas: primera con keyword principal, segunda invita a suscribirse",
- "titulo_short": "gancho de máx 55 caracteres para Short",
- "pregunta_comentario": "pregunta que invite a comentar basada en el tema",
- "tags": ["10 tags específicos: 3 del tema central, 3 de la mecánica/psicología, 2 de aplicación práctica, 2 de audiencia objetivo"],
- "puntos_clave": [
-   {"titulo": "2-4 palabras con intriga", "resumen": "qué se explica y qué ejemplo se da"},
-   {"titulo": "2-4 palabras", "resumen": "qué se explica y qué ejemplo se da"},
-   {"titulo": "2-4 palabras", "resumen": "qué se explica y qué ejemplo se da"},
-   {"titulo": "2-4 palabras", "resumen": "qué se explica y qué ejemplo se da"},
-   {"titulo": "2-4 palabras", "resumen": "qué se explica y qué ejemplo se da"}
- ]
+ "palabras_portada": ["3 opciones de 2-3 palabras EN MAYÚSCULAS, impacto visual"],
+ "miniatura_escena": "4-6 palabras en inglés para buscar/imagen (ej: brain scan, nervous person meeting, two people arguing)",
+ "descripcion_gancho": "2 líneas: keyword principal + promesa concreta; segunda invita a suscribirse",
+ "titulo_short": "gancho de máx 55 caracteres para YouTube Short",
+ "pregunta_comentario": "pregunta corta que invite a comentar",
+ "tags": ["10 tags ULTRA-ESPECÍFICOS: 2-3 del tema central, 2-3 de la mecánica, 1-2 preguntas de audiencia, 1-2 'psicologia + elemento', 1-2 'estoicismo + elemento'"],
+ "puntos": [{"titulo": "2-4 palabras con intriga", "resumen": "qué se explica y qué idea clave se deja"}]
 }"""
 
-def generar_plan(tema, contexto, sugerencias, titulos_previos, formato_narracion=None):
+def generar_plan(tema, contexto, sugerencias, titulos_previos, formato, perfil):
     prev = "\n".join(f"- {t}" for t in titulos_previos) or "Ninguno"
     sug  = "\n".join(f"- {s}" for s in sugerencias) or "Ninguna"
-    formato = formato_narracion or FORMATOS_NARRACION[0]
-    
-    prompt = f"""Eres showrunner de un canal de psicología y desarrollo personal de élite.
-Diseña el PLAN de un video educativo (~7-9 minutos, {NUM_CAPITULOS} puntos clave).
+
+    prompt = f"""Eres showrunner de un canal de psicología aplicada en español (México/Latam) con millones de vistas.
+Diseña el PLAN de un video educativo de ~8-10 minutos, con {NUM_PUNTOS} puntos principales.
 
 TEMA: {tema['tema']} | ÁNGULO: {tema['angulo']}
-LUGAR/CONTEXTO: {contexto}
+CONTEXTO: {contexto}
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-FORMATO NARRATIVO OBLIGATORIO: {formato['nombre'].upper()}
+FORMATO OBLIGATORIO: {formato['nombre'].upper()}
 {formato['instruccion']}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PERFIL DEL NARRADOR: {perfil}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-BÚSQUEDAS REALES EN YOUTUBE: {sug}
+BÚSQUEDAS REALES YOUTUBE: {sug}
 TÍTULOS YA PUBLICADOS (no repetir): {prev}
 
 ━━━ REGLA CRÍTICA: DATO CONTRAINTUITIVO ━━━
-El campo 'dato_contraintuitivo' es el corazón del CTR. Debe ser un detalle que ROMPE la lógica o la creencia popular.
+El campo 'dato_contraintuitivo' es el corazón del CTR. Debe ser un dato que ROMPE
+la intuición del espectador. Ejemplos que funcionan:
+  • "sonreír más te hace menos creíble"
+  • "estudiar más horas reduce el aprendizaje"
+  • "la multitarea baja el CI 10 puntos"
+  • "dormir menos de 6h equivale a estar ebrio"
+  • "los introvertidos son mejores líderes"
 
 REGLAS DE TÍTULO:
-1. NUNCA termines el título con "| Desarrollo Personal" o similar.
-2. AL MENOS 3 de los 6 títulos DEBEN incluir el dato_contraintuitivo literal o parafraseado.
-3. Usa mayúsculas solo para 1-2 palabras de impacto.
-4. NO empieces los 6 títulos igual.
+1. NUNCA termines con "| Psicología" ni fórmulas genéricas.
+2. AL MENOS 3 de los 6 títulos deben incluir el dato_contraintuitivo o una contradicción.
+3. Cada título con estructura DISTINTA:
+   - Advertencia: "Nunca [verbo] cuando [contexto]"
+   - Contradicción: "Mientras más [X], menos [Y]"
+   - Confesión: "Lo que descubrí sobre [tema] cambió todo"
+   - Pregunta: "¿Por qué [comportamiento] te está [consecuencia]?"
+   - Número específico: "5 señales de que [X]"
+   - Paradoja: "[acción obvia] te hace [resultado opuesto]"
+4. Combina "Si [situación], NUNCA [acción]" cuando encaje.
+5. Mayúsculas solo para 1-2 palabras de impacto.
 
 REGLAS DE CONTENIDO:
-1. El relato completo: estrictamente 1100-1400 palabras.
-2. Cada punto debe tener UN "momento de máximo impacto" específico (un ejemplo concreto).
-3. SHOWING not telling: muestra con acciones y objetos, no con adjetivos abstractos.
+1. Cada punto debe aportar VALOR concreto (no relleno).
+2. Incluye al menos 1 estudio o autor por video.
+3. El gancho debe INCLUIR el dato_contraintuitivo.
+4. Cada punto termina con una idea que el espectador pueda aplicar hoy.
 
 Responde SOLO con este JSON:
 {ESQUEMA_PLAN}"""
-    
     txt = llm(prompt, temperature=0.9, max_tokens=2400, json_mode=True)
     plan = parsear_json(txt)
-    if not (isinstance(plan.get("titulos"), list) and len(plan["titulos"]) >= 3 and isinstance(plan.get("puntos_clave"), list) and len(plan["puntos_clave"]) >= NUM_CAPITULOS and plan.get("gancho") and plan.get("dato_contraintuitivo")):
+    if not (isinstance(plan.get("titulos"), list) and len(plan["titulos"]) >= 3
+            and isinstance(plan.get("puntos"), list) and len(plan["puntos"]) >= NUM_PUNTOS
+            and plan.get("gancho") and plan.get("palabras_portada")
+            and plan.get("dato_contraintuitivo")):
         raise ValueError("plan incompleto")
-    plan["_formato_instruccion"] = formato["instruccion"]
-    plan["_nombre_formato"] = formato["nombre"]
     return plan
 
 def limpiar_texto_narracion(t):
     t = re.sub(r"[\U00010000-\U0010ffff]", " ", t)
-    t = re.sub(r"(?im)^\s*(cap[ií]tulo|punto|parte)\s*\d+.\s*$", " ", t)
+    t = re.sub(r"(?im)^\s*(punto|cap[ií]tulo|parte)\s*\d+.\s*$", " ", t)
     t = re.sub(r"\[[^\]]*\]", " ", t)
     t = re.sub(r"[*_#>`~]+", " ", t)
     return re.sub(r"\s+", " ", t).strip()
 
-def generar_capitulos(plan, tema, contexto):
-    caps = plan["puntos_clave"][:NUM_CAPITULOS]
-    indice = "\n".join(f"{i+1}. {c.get('titulo','')}: {c.get('resumen','')}" for i, c in enumerate(caps))
+def generar_puntos(plan, tema, contexto):
+    puntos = plan["puntos"][:NUM_PUNTOS]
+    indice = "\n".join(f"{i+1}. {p.get('titulo','')}: {p.get('resumen','')}"
+                       for i, p in enumerate(puntos))
     textos = []
-    formato_instruccion = plan.get("_formato_instruccion", "")
-    nombre_formato = plan.get("_nombre_formato", "lista_educativa")
-    dato_contraintuitivo = plan.get("dato_contraintuitivo", "un detalle perturbador")
+    formato     = plan.get("_formato_instruccion", "Explicación directa.")
+    perfil      = plan.get("_perfil_narrador", "psicólogo")
+    nombre_fmt  = plan.get("_nombre_formato", "lista_educativa")
+    dato_c      = plan.get("dato_contraintuitivo", "un dato sorprendente")
 
-    for i, cap in enumerate(caps):
-        previo = textos[-1][-500:] if textos else ""
+    for i, punto in enumerate(puntos):
+        previo = textos[-1][-600:] if textos else ""
         if i == 0:
-            extra = f"Empieza EXACTAMENTE con esta frase de gancho: \"{plan['gancho']}\" e inmediatamente después INTEGRA el dato contraintuitivo '{dato_contraintuitivo}'."
-        elif i == len(caps) - 1:
-            extra = "Cierra con una conclusión poderosa y una llamada a la acción para suscribirse y comentar."
+            extra = (f"Empieza EXACTAMENTE con: \"{plan['gancho']}\" y enseguida "
+                     f"INTEGRA el dato contraintuitivo '{dato_c}' como el detonante.")
+        elif i == len(puntos) - 1:
+            extra = ("Cierra con un cierre que sintetice y deje al espectador con "
+                     "una acción concreta para hoy. Vuelve a mencionar el dato "
+                     "contraintuitivo para reforzarlo.")
         else:
-            extra = f"Termina con una transición suave al siguiente punto y asegúrate de que el dato contraintuitivo '{dato_contraintuitivo}' se refuerce."
+            extra = (f"Conecta con el punto anterior y asegúrate de que el dato "
+                     f"contraintuitivo '{dato_c}' se mencione si encaja.")
 
-        prompt = f"""Escribe el PUNTO {i+1} de {len(caps)} de un video de psicología/desarrollo personal.
-FORMATO NARRATIVO: {nombre_formato.upper()}
-{formato_instruccion}
-CONTEXTO: {contexto}
-ÁNGULO: {tema['angulo']}
-DATO CONTRAINTUITIVO DEL VIDEO: "{dato_contraintuitivo}"
-ÍNDICE: {indice}
-ESTE PUNTO: {cap.get('titulo', '')} → {cap.get('resumen', '')}
+        prompt = f"""Escribe el PUNTO {i+1} de {len(puntos)} de un video educativo de psicología.
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+FORMATO: {nombre_fmt.upper()}
+{formato}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+NARRADOR: {plan.get('protagonista', 'Daniel')} — {perfil}
+TEMA: {tema['angulo']}
+DATO CONTRAINTUITIVO: "{dato_c}"
+SINOPSIS: {plan.get('resumen', '')}
+ÍNDICE COMPLETO: {indice}
+ESTE PUNTO: {punto.get('titulo', '')} → {punto.get('resumen', '')}
 {extra}
-{('FINAL DEL PUNTO ANTERIOR (continúa sin repetir): ' + previo) if previo else ''}
+{('CIERRE DEL PUNTO ANTERIOR: ' + previo) if previo else ''}
 
 REGLAS:
-- 200-300 palabras exactas.
-- Español neutro/mexicano, tono de autoridad empática.
-- ⚠️ CADA PUNTO debe tener UN MOMENTO DE MÁXIMO IMPACTO CONCRETO — un ejemplo específico.
-- Sin listas, emojis, títulos de sección ni acotaciones entre corchetes.
+- 250-320 palabras exactas
+- Español neutro-mexicano, tono de autoridad pero accesible
+- Cada punto aporta VALOR: ejemplo cotidiano + explicación + aplicación práctica
+- Incluye 1 estudio, autor o dato científico (real o plausible)
+- SHOWING not telling: describe escenas concretas
+- El dato contraintuitivo debe sonar natural, no forzado
+- Sin listas, emojis, ni acotaciones
 Devuelve SOLO el texto del punto."""
-        
         texto = None
         for intento in range(3):
             t = llm(prompt, temperature=0.85, max_tokens=800)
             t = limpiar_texto_narracion(t) if t else ""
-            if len(t.split()) >= 150:
+            if len(t.split()) >= 200:
                 texto = t
                 break
+            print(f"⚠️ Punto {i+1} corto ({len(t.split())} pal.)")
         if not texto:
             raise RuntimeError(f"No se pudo generar el punto {i+1}")
         textos.append(texto)
-        print(f"   ✅ Punto {i+1}/{len(caps)}: {len(texto.split())} palabras")
+        print(f"   ✅ Punto {i+1}/{len(puntos)}: {len(texto.split())} palabras")
     return textos
 
+def expandir_texto(titulo, texto_actual):
+    prompt = (f'Video: "{titulo}". Final:\n"""\n{texto_actual[-500:]}\n"""\n'
+              f"Añade 200-300 palabras profundizando el cierre. Devuelve SOLO el texto.")
+    for _ in range(2):
+        t = llm(prompt, temperature=0.8, max_tokens=900)
+        t = limpiar_texto_narracion(t) if t else ""
+        if len(t.split()) > 150:
+            return t
+    return ""
+
+OUTROS = [
+    "Y hasta aquí llega el video de hoy. Si te aportó, suscríbete y activa la campanita. "
+    "Cuéntame en los comentarios: ¿cuál de estos puntos vas a aplicar primero?",
+    "Eso fue todo por hoy. Si llegaste hasta el final, déjame un like y suscríbete para "
+    "no perderte el siguiente. ¿Tú qué opinas? Te leo abajo.",
+]
+
 # =================================================================
-# SEGMENTOS Y VOZ
+# SEGMENTOS
 # =================================================================
 def dividir_en_segmentos(texto, max_palabras=SEG_MAX_PALABRAS):
     oraciones = [o.strip() for o in re.split(r"(?<=[.!?…])\s+", texto) if o.strip()]
-    if not oraciones: return [texto]
+    if not oraciones:
+        return [texto]
     segs, actual, cuenta = [], [], 0
     for o in oraciones:
         n = len(o.split())
@@ -460,20 +720,28 @@ def dividir_en_segmentos(texto, max_palabras=SEG_MAX_PALABRAS):
         else:
             actual.append(o)
             cuenta += n
-    if actual: segs.append(" ".join(actual))
+    if actual:
+        segs.append(" ".join(actual))
+    if len(segs) > 1 and len(segs[-1].split()) < 12:
+        segs[-2] += " " + segs.pop()
     return segs
 
-def crear_segmentos(capitulos_txt):
+def crear_segmentos(puntos_txt):
     segs = []
-    for ci, txt in enumerate(capitulos_txt):
+    for pi, txt in enumerate(puntos_txt):
         for k, p in enumerate(dividir_en_segmentos(txt)):
-            segs.append({"cap": ci, "texto": p, "cap_ini": k == 0})
+            segs.append({"punto": pi, "texto": p, "punto_ini": k == 0})
     n = len(segs)
     for i, s in enumerate(segs):
         p = i / max(n - 1, 1)
-        s["etapa"] = "gancho" if p < 0.1 else "contexto" if p < 0.25 else "desarrollo" if p < 0.85 else "conclusion"
+        s["etapa"] = ("gancho" if p < 0.12 else
+                      "contexto" if p < 0.30 else
+                      "desarrollo" if p < 0.85 else "conclusion")
     return segs
 
+# =================================================================
+# VOZ (edge_tts)
+# =================================================================
 def duracion_audio(ruta):
     a = AudioFileClip(ruta)
     d = a.duration
@@ -481,13 +749,14 @@ def duracion_audio(ruta):
     return d
 
 def generar_audio(texto, nombre, etapa):
-    limpio = re.sub(r'[{}[\]"]', " ", texto).strip()
-    if len(limpio) < 10: return None
+    limpio = re.sub(r'[{}[\]"]', " ", texto)
+    limpio = re.sub(r"\s+", " ", limpio).strip()
+    if len(limpio) < 10:
+        return None
     ruta = f"temp_audio_{nombre}.mp3"
     rate = RATE_ETAPA.get(etapa, "+4%")
     pitch = VOZ_CANAL["tono"]
     voces = [VOZ_CANAL["voz"]] + [v for v in VOCES_RESPALDO if v != VOZ_CANAL["voz"]]
-    
     for voz in voces:
         for intento in range(2):
             async def _go():
@@ -505,161 +774,130 @@ def generar_audio(texto, nombre, etapa):
 def sintetizar(segs):
     ok = []
     for i, s in enumerate(segs):
-        ruta = generar_audio(s["texto"], f"seg_{i}", s["etapa"])
+        ruta = generar_audio(s["texto"], s.get("id", i), s["etapa"])
         if not ruta:
-            print(f"⚠️ Segmento {i} sin audio, se omite")
+            print(f"⚠️ Segmento {i} sin audio")
             continue
-        s["audio"] = ruta
+        s["audio"]     = ruta
         s["dur_audio"] = duracion_audio(ruta)
         ok.append(s)
-        time.sleep(0.3)
+        time.sleep(0.2)
+    if len(ok) < len(segs) * 0.9:
+        raise RuntimeError("Demasiados segmentos sin audio")
     return ok
 
 def construir_timeline(segs):
     t = 0.0
     for s in segs:
         s["inicio"] = t
-        s["dur"] = s["dur_audio"] + PAUSA_ETAPA.get(s["etapa"], 0.5)
+        s["dur"]    = s["dur_audio"] + PAUSA_ETAPA.get(s["etapa"], 0.5)
         t += s["dur"]
     return t
 
 # =================================================================
-# IMÁGENES: CLOUDFLARE -> PEXELS -> LOCAL
+# CLOUDFLARE FLUX — Generación de imágenes
 # =================================================================
-POOL, USADOS = [], set()
+ANTI_DEFORM = (", cinematic wide shot, professional lighting, highly detailed, "
+               "photorealistic, 8k, no text, no deformed faces, no mutated hands, "
+               "no extra limbs, sharp focus, professional composition")
 
-def pexels_get(url, params, intentos=3):
-    for i in range(intentos):
-        try:
-            r = requests.get(url, headers={"Authorization": PEXELS_API_KEY}, params=params, timeout=25)
-            if r.status_code == 200:
-                time.sleep(0.6)
-                return r.json()
-            if r.status_code == 429:
-                time.sleep(25 * (i + 1))
-                continue
-        except Exception: pass
-    return None
-
-def buscar_fotos(query, cantidad):
-    for pagina in (random.randint(1, 2), 1):
-        data = pexels_get("https://api.pexels.com/v1/search", {"query": query, "orientation": "landscape", "size": "large", "per_page": 15, "page": pagina})
-        fotos = [f["src"]["large2x"] for f in (data or {}).get("photos", [])]
-        random.shuffle(fotos)
-        fotos = [u for u in fotos if u not in USADOS]
-        if fotos: return fotos[:cantidad]
-    return []
-
-def buscar_video(query):
-    data = pexels_get("https://api.pexels.com/videos/search", {"query": query, "orientation": "landscape", "size": "medium", "per_page": 10})
-    vids = (data or {}).get("videos", [])
-    random.shuffle(vids)
-    for v in vids:
-        if v["id"] in USADOS or v.get("duration", 0) < 5: continue
-        archivos = [f for f in v.get("video_files", []) if f.get("file_type") == "video/mp4" and f.get("width") and 1280 <= f["width"] <= 1920]
-        if archivos:
-            f = min(archivos, key=lambda x: abs(x["width"] - 1920))
-            return v["id"], f["link"]
-    return None
-
-def video_valido(ruta):
-    try:
-        c = VideoFileClip(ruta, audio=False)
-        ok = (c.duration or 0) > 2
-        c.close()
-        return ok
-    except Exception: return False
-
-def generar_imagen_cloudflare(prompt, ruta_salida, intentos=3):
-    if not CLOUDFLARE_ACCOUNT_ID or not CLOUDFLARE_API_TOKEN: return False
-    url = f"https://api.cloudflare.com/client/v4/accounts/{CLOUDFLARE_ACCOUNT_ID}/ai/run/{CLOUDFLARE_MODEL}"
+def generar_imagen_cloudflare(prompt_en, idx, intentos=3):
+    if not USAR_IMAGENES_IA:
+        return None
+    if not CLOUDFLARE_ACCOUNT_ID or not CLOUDFLARE_API_TOKEN:
+        print("⚠️ Sin credenciales Cloudflare")
+        return None
+    prompt_completo = prompt_en.strip() + ANTI_DEFORM
+    url = (f"https://api.cloudflare.com/client/v4/accounts/"
+           f"{CLOUDFLARE_ACCOUNT_ID}/ai/run/{CLOUDFLARE_MODEL}")
     headers = {"Authorization": f"Bearer {CLOUDFLARE_API_TOKEN}"}
-    prompt_completo = f"{prompt}, {ESTILO_CANAL}"
-    payload = {"prompt": prompt_completo, "num_steps": 20, "guidance": 7.5, "width": 1920, "height": 1080}
-    
-    for intento in range(intentos):
+    payload = {"prompt": prompt_completo}
+    for i in range(intentos):
+        print(f"   🎨 Cloudflare intento {i+1}/{intentos}")
         try:
-            print(f"   🎨 Cloudflare intento {intento+1}/{intentos}")
-            r = requests.post(url, headers=headers, json=payload, timeout=90)
+            r = requests.post(url, headers=headers, json=payload, timeout=120)
             if r.status_code == 200:
-                with open(ruta_salida, "wb") as f: f.write(r.content)
-                if os.path.getsize(ruta_salida) > 50000:
+                ruta = f"temp_img_{idx}.jpg"
+                # flux-1-schnell devuelve binario
+                if r.headers.get("Content-Type", "").startswith("image"):
+                    with open(ruta, "wb") as f:
+                        f.write(r.content)
+                else:
+                    # Fallback: JSON con base64
+                    import base64
+                    data = r.json()
+                    if "result" in data and "image" in data["result"]:
+                        with open(ruta, "wb") as f:
+                            f.write(base64.b64decode(data["result"]["image"]))
+                    else:
+                        print(f"⚠️ Formato inesperado: {str(data)[:100]}")
+                        continue
+                if os.path.exists(ruta) and os.path.getsize(ruta) > 1000:
                     print(f"   ✅ Imagen Cloudflare generada")
-                    return True
-                else: os.remove(ruta_salida)
-            elif r.status_code == 429: time.sleep(10)
-        except Exception as e: print(f"   ⚠️ Cloudflare error: {e}")
-        time.sleep(2 * (intento + 1))
-    return False
-
-def obtener_imagen_fallback(tema):
-    carpeta = f"fallback_images/{tema.get('categoria', 'psicologia')}/"
-    if os.path.exists(carpeta):
-        archivos = [f for f in os.listdir(carpeta) if f.endswith('.jpg')]
-        if archivos: return os.path.join(carpeta, random.choice(archivos))
+                    return ruta
+            else:
+                print(f"   ⚠️ Cloudflare {r.status_code}: {r.text[:150]}")
+        except Exception as e:
+            print(f"   ❌ Error Cloudflare: {e}")
+        time.sleep(3 * (i + 1))
     return None
 
-def obtener_medios(idx, etapa, query, n, tema):
-    medios = []
-    for k in range(n):
-        # Intento 1: Cloudflare
-        ruta_cf = f"temp_cf_{idx}_{k}.jpg"
-        if generar_imagen_cloudflare(query, ruta_cf):
-            medios.append({"tipo": "img", "path": ruta_cf})
-            continue
-        
-        # Intento 2: Pexels
-        print(f"   ⚠️ Cloudflare falló, usando Pexels...")
-        if USAR_VIDEOS and random.random() < PROB_VIDEO.get(etapa, 0.5):
-            r = buscar_video(query)
-            if r:
-                vid, url = r
-                ruta = f"temp_vid_{idx}_{k}.mp4"
-                if descargar(url, ruta, 70 * 1024 * 1024) and video_valido(ruta):
-                    USADOS.add(vid)
-                    medios.append({"tipo": "video", "path": ruta})
-                    continue
-        
-        urls = buscar_fotos(query, 1)
-        if urls:
-            ruta = f"temp_img_{idx}_{k}.jpg"
-            if descargar(urls[0], ruta, 15 * 1024 * 1024):
-                USADOS.add(urls[0])
-                medios.append({"tipo": "img", "path": ruta})
-                continue
-        
-        # Intento 3: Fallback local
-        print(f"   ⚠️ Pexels falló, usando fallback local...")
-        fallback = obtener_imagen_fallback(tema)
-        if fallback:
-            medios.append({"tipo": "img", "path": fallback})
-    
-    if not medios: raise RuntimeError(f"Sin imágenes para segmento {idx}")
-    return medios
+def imagen_fallback(idx):
+    """Genera una imagen gradient oscura si Cloudflare falla"""
+    from PIL import Image
+    img = Image.new("RGB", (W, H), (10, 15, 25))
+    draw = ImageDraw.Draw(img)
+    for y in range(H):
+        color = (int(10 + 30 * y / H), int(15 + 20 * y / H), int(25 + 40 * y / H))
+        draw.line([(0, y), (W, y)], fill=color)
+    ruta = f"temp_img_{idx}.jpg"
+    img.save(ruta, "JPEG", quality=85)
+    return ruta
 
-def planificar_consultas(segs, tema, anio):
+# =================================================================
+# PLANIFICACIÓN VISUAL POR IA (equivalente a planificar_consultas)
+# =================================================================
+def planificar_visuales(segs, tema):
+    """La IA lee cada segmento y decide el prompt visual en inglés."""
     out = [None] * len(segs)
     for ini in range(0, len(segs), 15):
         lote = segs[ini:ini + 15]
         listado = "\n".join(f"{j+1}. {s['texto'][:230]}" for j, s in enumerate(lote))
-        prompt = f"""Eres director de fotografía. Para CADA fragmento numerado devuelve UNA consulta corta (2-4 palabras, EN INGLÉS) para generar una imagen con IA o buscar en Pexels con atmósfera de psicología/profesional.
-Tema: {tema['tema']}.
+        prompt = f"""Eres director de fotografía de un canal de PSICOLOGÍA de élite (estilo
+documental educativo, autoridad intelectual).
+
+Para CADA fragmento numerado devuelve UNA consulta corta (4-6 palabras, EN INGLÉS)
+para generar una imagen con Flux que ilustre visualmente ese fragmento.
+
+REGLAS:
+- Estilo: cinematográfico, profesional, oscuro-elegante, editorial
+- Prefiere: siluetas, manos, entornos, objetos simbólicos, escenarios
+- EVITA primeros planos de rostros (Flux los hace pero mejor evitarlos)
+- Ejemplos: "cinematic brain scan blue light", "person walking alone silhouette", "hands writing journal dark", "two people arguing office"
+- NUNCA incluyas: "text", "words", "letters", "caption"
+
+Tema: {tema['tema']}
 Fragmentos:\n{listado}
+
 Responde SOLO JSON: {{"consultas": ["..."]}} con exactamente {len(lote)} elementos."""
         lista = []
-        try: lista = parsear_json(llm(prompt, 0.4, 700, json_mode=True)).get("consultas", [])
-        except Exception: pass
+        try:
+            lista = parsear_json(llm(prompt, 0.4, 800, json_mode=True)).get("consultas", [])
+        except Exception as e:
+            print(f"⚠️ Planificación visual: {e}")
         for j, s in enumerate(lote):
             q = lista[j] if j < len(lista) and isinstance(lista[j], str) else ""
-            q = " ".join(re.sub(r"[^a-zA-Z ]", " ", q).split()[:5])
-            if len(q) < 6: q = random.choice(tema["visuales"])
+            q = " ".join(re.sub(r"[^a-zA-Z ]", " ", q).split()[:7])
+            if len(q) < 10:
+                q = "cinematic dark moody professional educational scene"
             out[ini + j] = q
     return out
 
 # =================================================================
-# RENDER Y MINIATURA
+# RENDER
 # =================================================================
 _VIG = {}
+
 def vignette(size, base=1.0, fuerza=0.55):
     k = (size, base)
     if k not in _VIG:
@@ -670,22 +908,21 @@ def vignette(size, base=1.0, fuerza=0.55):
     return _VIG[k]
 
 def grade(img, etapa):
-    img = ImageEnhance.Color(img).enhance(0.82)
-    img = ImageEnhance.Contrast(img).enhance({"conclusion": 1.3, "gancho": 1.1}.get(etapa, 1.15))
-    img = ImageEnhance.Brightness(img).enhance({"gancho": 0.8, "conclusion": 0.95}.get(etapa, 0.88))
-    return Image.blend(img, Image.new("RGB", img.size, (8, 24, 40)), 0.10)
+    img = ImageEnhance.Color(img).enhance(0.85)
+    img = ImageEnhance.Contrast(img).enhance({"gancho": 1.20, "conclusion": 1.10}.get(etapa, 1.15))
+    img = ImageEnhance.Brightness(img).enhance({"gancho": 0.90, "conclusion": 0.95}.get(etapa, 0.92))
+    return Image.blend(img, Image.new("RGB", img.size, (12, 18, 32)), 0.08)
 
 class RenderEscenas:
     def __init__(self, escenas, size, total):
         self.esc, self.size, self.total = escenas, size, total
         self.starts = [e["inicio"] for e in escenas]
-        self._ikey = self._img = self._vpath = self._vid = None
+        self._ikey = self._img = None
         self.vig_img = vignette(size, 1.0)
-        self.vig_vid = vignette(size, 0.85)
+
     def cerrar(self):
-        if self._vid is not None:
-            try: self._vid.close()
-            except Exception: pass
+        pass
+
     def _base(self, e):
         key = (e["path"], e["etapa"])
         if self._ikey != key:
@@ -694,47 +931,53 @@ class RenderEscenas:
             arr = np.asarray(grade(im, e["etapa"]), dtype=np.float32) * vignette(sz, 1.0)
             self._img, self._ikey = Image.fromarray(arr.astype(np.uint8)), key
         return self._img
+
     def _frame_img(self, e, lt):
         base = self._base(e)
         bw, bh = base.size
         p = min(max(lt / e["dur"], 0), 1) if e["dur"] > 0 else 0
-        if not e["zin"]: p = 1 - p
-        cw = bw / (1 + 0.2 * p)
+        if not e["zin"]:
+            p = 1 - p
+        # Zoom sutil (8%) — el ritmo lento hace que el zoom sea más elegante
+        cw = bw / (1 + 0.08 * p)
         ch = cw * bh / bw
         mx, my = bw - cw, bh - ch
         x0 = min(max(mx / 2 + e["ax"] * mx / 2 * 0.8, 0), mx)
         y0 = min(max(my / 2 + e["ay"] * my / 2 * 0.8, 0), my)
-        return np.asarray(base.resize(self.size, Image.BILINEAR, box=(x0, y0, x0 + cw, y0 + ch)))
-    def _frame_video(self, e, lt):
-        if self._vpath != e["path"]:
-            self.cerrar()
-            self._vid, self._vpath = VideoFileClip(e["path"], audio=False), e["path"]
-        v = self._vid
-        d = v.duration or 1
-        off = e["off"] * max(0, d - e["dur"])
-        tt = max(0, min((off + lt) % d, d - 0.05))
-        im = ImageOps.fit(Image.fromarray(v.get_frame(tt)), self.size, Image.BILINEAR)
-        return (np.asarray(im, dtype=np.float32) * self.vig_vid).astype(np.uint8)
+        return np.asarray(base.resize(self.size, Image.BILINEAR,
+                                      box=(x0, y0, x0 + cw, y0 + ch)))
+
     def frame(self, t):
         i = max(0, bisect.bisect_right(self.starts, t) - 1)
         e = self.esc[i]
         lt = t - e["inicio"]
-        fr = self._frame_video(e, lt) if e["tipo"] == "video" else self._frame_img(e, lt)
+        fr = self._frame_img(e, lt)
         f = 1.0
-        if e.get("fade") and lt < 0.6: f = lt / 0.6
-        if t > self.total - 1.5: f = min(f, max(0.0, (self.total - t) / 1.5))
-        if f < 1.0: fr = (fr.astype(np.float32) * f).astype(np.uint8)
+        if e.get("fade") and lt < 0.6:
+            f = lt / 0.6
+        if t > self.total - 1.5:
+            f = min(f, max(0.0, (self.total - t) / 1.5))
+        if f < 1.0:
+            fr = (fr.astype(np.float32) * f).astype(np.uint8)
         return fr
 
 def construir_escenas(segs):
     esc = []
     for s in segs:
-        m = s["medios"]
-        d = s["dur"] / len(m)
-        for k, med in enumerate(m):
-            esc.append({"tipo": med["tipo"], "path": med["path"], "inicio": s["inicio"] + k * d, "dur": d,
-                        "etapa": s["etapa"], "fade": bool(k == 0 and s.get("cap_ini")), "off": random.random(),
-                        "zin": random.random() < 0.6, "ax": random.uniform(-1, 1), "ay": random.uniform(-1, 1)})
+        # Dividir cada segmento en imágenes de SEG_ESCENA segundos
+        n_imgs = max(1, round(s["dur_audio"] / SEG_ESCENA))
+        dur_por_img = s["dur"] / n_imgs
+        for k in range(n_imgs):
+            esc.append({
+                "path": s["medios"][k % len(s["medios"])],
+                "inicio": s["inicio"] + k * dur_por_img,
+                "dur": dur_por_img,
+                "etapa": s["etapa"],
+                "fade": bool(k == 0 and s.get("punto_ini")),
+                "zin": random.random() < 0.65,
+                "ax": random.uniform(-1, 1),
+                "ay": random.uniform(-1, 1),
+            })
     return esc
 
 def mezclar_audio(segs, total, fondo, extras=()):
@@ -745,63 +988,57 @@ def mezclar_audio(segs, total, fondo, extras=()):
     if fondo and os.path.exists(fondo):
         try:
             bg = AudioFileClip(fondo)
-            if bg.duration < total: bg = concatenate_audioclips([bg] * (int(total / bg.duration) + 1))
+            if bg.duration < total:
+                bg = concatenate_audioclips([bg] * (int(total / bg.duration) + 1))
             capas.append(bg.subclip(0, total).volumex(VOL_FONDO).audio_fadein(2).audio_fadeout(3))
-        except Exception as e: print(f"⚠️ Fondo: {e}")
+        except Exception as e:
+            print(f"⚠️ Fondo: {e}")
     return CompositeAudioClip(capas).set_duration(total), clips
 
 def renderizar(escenas, total, audio, size, salida):
     render = RenderEscenas(escenas, size, total)
     video = VideoClip(render.frame, duration=total).set_audio(audio)
-    video.write_videofile(salida, fps=FPS, codec="libx264", audio_codec="aac", audio_bitrate="192k", threads=4,
-                          preset="veryfast", temp_audiofile="temp_audio_final.m4a",
-                          ffmpeg_params=["-crf", "23", "-pix_fmt", "yuv420p", "-movflags", "+faststart"], logger=None)
+    video.write_videofile(salida, fps=FPS, codec="libx264", audio_codec="aac",
+                          audio_bitrate="192k", threads=4, preset="veryfast",
+                          temp_audiofile="temp_audio_final.m4a",
+                          ffmpeg_params=["-crf", "23", "-pix_fmt", "yuv420p",
+                                         "-movflags", "+faststart"],
+                          logger=None)
     render.cerrar()
     video.close()
     return salida
 
+# =================================================================
+# MINIATURA
+# =================================================================
 def obtener_fuente(size):
     os.makedirs("fonts", exist_ok=True)
     ruta = "fonts/Anton-Regular.ttf"
     if not os.path.exists(ruta):
         try:
-            r = requests.get("https://raw.githubusercontent.com/google/fonts/main/ofl/anton/Anton-Regular.ttf", timeout=20)
+            r = requests.get(FUENTE_URL, timeout=20)
             if r.status_code == 200 and len(r.content) > 20000:
-                with open(ruta, "wb") as f: f.write(r.content)
-        except Exception: pass
-    for p in [ruta, "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"]:
-        try: return ImageFont.truetype(p, size)
-        except Exception: continue
+                with open(ruta, "wb") as f:
+                    f.write(r.content)
+        except Exception:
+            pass
+    for p in [ruta, "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+              "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf"]:
+        try:
+            return ImageFont.truetype(p, size)
+        except Exception:
+            continue
     return ImageFont.load_default()
 
-def puntuar_miniatura(ruta):
-    try:
-        a = np.asarray(Image.open(ruta).convert("L").resize((320, 180)), dtype=np.float32)
-        w = a.shape[1]
-        return a.std() + 0.5 * a[:, w // 2:].std() - 0.3 * a[:, :w // 2].std() - 0.4 * abs(a.mean() - 90)
-    except Exception: return -999
-
-def elegir_base_miniatura(query):
-    urls = []
-    for q in (query, query + " dark", "dark professional"):
-        data = pexels_get("https://api.pexels.com/v1/search", {"query": q, "orientation": "landscape", "size": "large", "per_page": 8, "page": 1})
-        urls += [f["src"]["large2x"] for f in (data or {}).get("photos", [])[:6] if f["src"]["large2x"] not in urls]
-        if len(urls) >= 6: break
-    mejor = (-999, None)
-    for i, u in enumerate(urls[:6]):
-        ruta = f"temp_thumb_{i}.jpg"
-        if descargar(u, ruta, 15 * 1024 * 1024):
-            sc = puntuar_miniatura(ruta)
-            if sc > mejor[0]: mejor = (sc, ruta)
-    return mejor[1]
-
 def dividir_lineas(palabras):
-    if len(palabras) <= 2: return palabras[:]
+    if len(palabras) <= 2:
+        return palabras[:]
     mejor = None
     for i in range(1, len(palabras)):
         a, b = " ".join(palabras[:i]), " ".join(palabras[i:])
         m = max(len(a), len(b))
-        if mejor is None or m < mejor[0]: mejor = (m, [a, b])
+        if mejor is None or m < mejor[0]:
+            mejor = (m, [a, b])
     return mejor[1]
 
 def crear_miniatura(img_path, texto, salida):
@@ -813,40 +1050,51 @@ def crear_miniatura(img_path, texto, salida):
         img = ImageEnhance.Color(img).enhance(1.35)
         img = ImageEnhance.Sharpness(img).enhance(2.0)
         img = ImageEnhance.Brightness(img).enhance(0.90)
+
         grad = Image.new("L", (TW, TH), 0)
         gd = ImageDraw.Draw(grad)
-        for x in range(TW): gd.line([(x, 0), (x, TH)], fill=int(240 * max(0, 1 - x / (TW * 0.65)) ** 1.6))
+        for x in range(TW):
+            gd.line([(x, 0), (x, TH)], fill=int(240 * max(0, 1 - x / (TW * 0.65)) ** 1.6))
         img = Image.composite(Image.new("RGB", (TW, TH), (0, 0, 0)), img, grad)
         arr = np.asarray(img, dtype=np.float32) * vignette((TW, TH), 1.0, 0.55)
         img = Image.fromarray(arr.astype(np.uint8)).convert("RGBA")
+
         lineas = dividir_lineas(texto.upper().split()[:4])
         max_w, max_h = int(TW * 0.58), int(TH * 0.78)
+
         for size in range(150, 60, -6):
             font = obtener_fuente(size)
             cajas = [font.getbbox(l) for l in lineas]
             alto = sum(b[3] - b[1] for b in cajas) + 18 * (len(lineas) - 1)
-            if max(b[2] - b[0] for b in cajas) <= max_w and alto <= max_h: break
+            if max(b[2] - b[0] for b in cajas) <= max_w and alto <= max_h:
+                break
+
         acento = random.choice([(255, 220, 0), (255, 50, 50), (255, 140, 0), (255, 255, 255)])
-        y = (TH - alto) // 2 + 10
-        pos = [(l, 60, y - b[1]) for l, b in zip(lineas, cajas)]
         y = (TH - alto) // 2 + 10
         pos = []
         for l, b in zip(lineas, cajas):
             pos.append((l, 60, y - b[1]))
             y += (b[3] - b[1]) + 18
+
         glow = Image.new("RGBA", (TW, TH), (0, 0, 0, 0))
         gdraw = ImageDraw.Draw(glow)
-        for l, x, yy in pos: gdraw.text((x, yy), l, font=font, fill=acento + (255,), stroke_width=10, stroke_fill=acento + (255,))
+        for l, x, yy in pos:
+            gdraw.text((x, yy), l, font=font, fill=acento + (255,),
+                       stroke_width=10, stroke_fill=acento + (255,))
         img = Image.alpha_composite(img, glow.filter(ImageFilter.GaussianBlur(24)))
+
         draw = ImageDraw.Draw(img)
         borde = max(7, size // 20)
         for i, (l, x, yy) in enumerate(pos):
             color = acento if (i == len(pos) - 1) else (255, 255, 255)
-            draw.text((x, yy), l, font=font, fill=color + (255,), stroke_width=borde, stroke_fill=(0, 0, 0, 255))
+            draw.text((x, yy), l, font=font, fill=color + (255,),
+                      stroke_width=borde, stroke_fill=(0, 0, 0, 255))
+
         rgb = img.convert("RGB")
         for q in (92, 87, 82, 76, 70):
             rgb.save(salida, "JPEG", quality=q, optimize=True)
-            if os.path.getsize(salida) < 1_900_000: break
+            if os.path.getsize(salida) < 1_900_000:
+                break
         print(f"✅ Miniatura: '{' / '.join(lineas)}' ({size}px)")
         return True
     except Exception as e:
@@ -854,48 +1102,65 @@ def crear_miniatura(img_path, texto, salida):
         return False
 
 # =================================================================
-# SEO Y PUBLICACIÓN
+# SEO
 # =================================================================
 def _ascii_tag_yt(t):
     nfd = unicodedata.normalize('NFD', str(t))
     sin_acentos = ''.join(c for c in nfd if unicodedata.category(c) != 'Mn')
-    return re.sub(r'\s+', ' ', re.sub(r'[^a-z0-9 ]', '', sin_acentos.lower())).strip()
+    limpio = re.sub(r'[^a-z0-9 ]', '', sin_acentos.lower())
+    return re.sub(r'\s+', ' ', limpio).strip()
 
 def construir_tags(plan, tema, sugerencias):
     nombre_tema = _ascii_tag_yt(tema["tema"].replace("_", " "))
     tags_ia = plan.get("tags", [])
-    if isinstance(tags_ia, str): tags_ia = [x.strip() for x in tags_ia.split(",")]
+    if isinstance(tags_ia, str):
+        tags_ia = [x.strip() for x in tags_ia.split(",")]
     p1 = list(tags_ia)
-    p2 = [f"psicologia {nombre_tema}", f"desarrollo personal {nombre_tema}"]
-    p3 = ["desarrollo personal", "psicologia", "crecimiento personal", "estoicismo", "productividad", "salud mental"]
+    p2 = [f"psicologia {nombre_tema}", f"estoicismo {nombre_tema}"]
+    p3 = ["psicologia", "estoicismo", "neurociencia", "desarrollo personal",
+          "habitos", "inteligencia emocional", "mentalidad", "productividad"]
     p4 = list(tema["keywords"]) + list(sugerencias)[:5]
-    todos, vistos, resultado, total_chars = [], set(), [], 0
+
+    todos, vistos = [], set()
     for raw in p1 + p2 + p3 + p4:
         tag = _ascii_tag_yt(raw)
-        if not tag or len(tag) < 2 or len(tag) > 40 or tag in vistos: continue
-        if any(x in tag for x in ("100 real", "veridico", "caso real")): continue
+        if not tag or len(tag) < 2 or len(tag) > 40 or tag in vistos:
+            continue
         vistos.add(tag)
         todos.append(tag)
+
+    resultado, total_chars = [], 0
     for tag in todos:
         costo = len(tag) + 1
-        if total_chars + costo > 450 or len(resultado) >= 18: break
+        if total_chars + costo > 450 or len(resultado) >= 18:
+            break
         resultado.append(tag)
         total_chars += costo
+    print(f"🏷️  Tags ({len(resultado)}): {', '.join(resultado[:6])}...")
     return resultado
 
 def construir_hashtags(tema):
-    return " ".join(["#DesarrolloPersonal", "#Psicologia", "#CodigoMental"] + tema.get("hashtags", [])[:2])
+    hs = ["#Psicologia", "#DesarrolloPersonal", "#Mentalidad"] + tema.get("hashtags", [])[:2] + ["#Estoicismo"]
+    return " ".join(hs[:6])
 
 def construir_descripcion(plan, tema, caps_ts, sugerencias, hashtags):
     gancho = plan.get("descripcion_gancho", " ").strip() or plan["gancho"]
-    if "psicologia" not in gancho.lower()[:220] and "desarrollo" not in gancho.lower()[:220]:
-        gancho = "Descubre las claves de la psicología y el desarrollo personal: " + gancho
+    if "psicolog" not in gancho.lower()[:220]:
+        gancho = "Psicología aplicada: " + gancho
     capitulos = "\n".join(f"{ts} {t}" for ts, t in caps_ts)
     rel = ", ".join(sugerencias[:5])
-    partes = [gancho, f"🔔 Suscríbete para contenido de élite cada día: {CANAL_LINK}?sub_confirmation=1", f"⏰ CAPÍTULOS\n{capitulos}", f"📖 SOBRE ESTE VIDEO\n{plan.get('resumen', '')}", (f"🔎 Temas relacionados: {rel}" if rel else ""), f"📺 Canal: {CANAL_LINK}"]
-    if ACTIVAR_DISCLOSURE_IA: partes.append(DISCLOSURE_TEXT.strip())
+    partes = [
+        gancho,
+        f"🔔 Suscríbete para un video nuevo cada día: {CANAL_LINK}?sub_confirmation=1",
+        f"⏰ CAPÍTULOS\n{capitulos}",
+        f"📖 SOBRE ESTE VIDEO\n{plan.get('resumen', '')}",
+        (f"🔎 Temas relacionados: {rel}" if rel else ""),
+    ]
+    if ACTIVAR_DISCLOSURE_IA:
+        partes.append(DISCLOSURE_TEXT.strip())
     partes.append(hashtags)
-    return "\n\n".join(p for p in partes if p and p.strip())[:4900]
+    desc = "\n\n".join(p for p in partes if p and p.strip())
+    return desc[:4900]
 
 def generar_srt(segs, ruta):
     def ts(x):
@@ -904,126 +1169,155 @@ def generar_srt(segs, ruta):
     lineas, n = [], 1
     for s in segs:
         pal = s["texto"].split()
-        if not pal: continue
+        if not pal:
+            continue
         t = s["inicio"]
         for i in range(0, len(pal), 9):
             tr = pal[i:i + 9]
             d = s["dur_audio"] * len(tr) / len(pal)
             lineas.append(f"{n}\n{ts(t)} --> {ts(t + d)}\n{' '.join(tr)}\n")
             n, t = n + 1, t + d
-    with open(ruta, "w", encoding="utf-8") as f: f.write("\n".join(lineas))
+    with open(ruta, "w", encoding="utf-8") as f:
+        f.write("\n".join(lineas))
     return ruta
 
+# =================================================================
+# PUBLICACIÓN
+# =================================================================
 def deberia_publicar(estado):
     ult = estado.get("ultima_publicacion")
-    if not ult: return True
+    if not ult:
+        return True
     try:
         dt = datetime.fromisoformat(ult)
-        if dt.tzinfo is None: dt = dt.replace(tzinfo=TZ)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=TZ)
         horas = (datetime.now(TZ) - dt).total_seconds() / 3600
         if horas < INTERVALO_MIN_HORAS:
             print(f"⏸️ Han pasado {horas:.1f}h (mínimo {INTERVALO_MIN_HORAS}h).")
             return False
-    except ValueError: pass
+    except ValueError:
+        pass
     return True
 
-def utc_iso(dt): return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+def proximo_slot(hora, variacion_min, min_offset=0):
+    ahora = datetime.now(TZ)
+    slot = ahora.replace(hour=hora, minute=0, second=0, microsecond=0)
+    variacion = random.randint(-variacion_min, variacion_min)
+    slot += timedelta(minutes=variacion + min_offset)
+    if slot - ahora < timedelta(minutes=10):
+        slot += timedelta(days=1)
+    return slot
+
+def utc_iso(dt):
+    return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
 
 def subir_video(youtube, ruta, titulo, descripcion, tags, publish_at=None):
-    status = {"privacyStatus": "public", "selfDeclaredMadeForKids": False, "containsSyntheticMedia": True}
-    if publish_at: status.update({"privacyStatus": "private", "publishAt": publish_at})
-    body = {"snippet": {"title": titulo[:100], "description": descripcion[:5000], "tags": tags, "categoryId": "27", "defaultLanguage": "es", "defaultAudioLanguage": "es"}, "status": status}
-    media = MediaFileUpload(ruta, chunksize=8 * 1024 * 1024, resumable=True, mimetype="video/mp4")
+    status = {"privacyStatus": "public", "selfDeclaredMadeForKids": False,
+              "containsSyntheticMedia": True}
+    if publish_at:
+        status.update({"privacyStatus": "private", "publishAt": publish_at})
+    body = {"snippet": {"title": titulo[:100], "description": descripcion[:5000],
+                        "tags": tags, "categoryId": "27", "defaultLanguage": "es",
+                        "defaultAudioLanguage": "es"},
+            "status": status}
+    media = MediaFileUpload(ruta, chunksize=8 * 1024 * 1024, resumable=True,
+                            mimetype="video/mp4")
     req = youtube.videos().insert(part="snippet,status", body=body, media_body=media)
     resp, reintentos = None, 0
     while resp is None:
         try:
             st, resp = req.next_chunk()
-            if st: print(f"   ⬆️ {int(st.progress() * 100)}%")
+            if st:
+                print(f"   ⬆️ {int(st.progress() * 100)}%")
         except (HttpError, ssl.SSLEOFError, ConnectionError, socket.timeout, OSError) as e:
-            es_reintento = isinstance(e, HttpError) and e.resp.status in (429, 500, 502, 503, 504) or isinstance(e, (ssl.SSLEOFError, ConnectionError, socket.timeout, OSError))
+            es_reintento = (isinstance(e, HttpError) and e.resp.status in (429, 500, 502, 503, 504))
+            es_reintento = es_reintento or isinstance(e, (ssl.SSLEOFError, ConnectionError, socket.timeout, OSError))
             if es_reintento and reintentos < 8:
                 reintentos += 1
-                print(f"⚠️ Error red/SSL (intento {reintentos}/8), reintentando...")
-                time.sleep(2 ** reintentos)
+                espera = 2 ** reintentos
+                print(f"⚠️ Reintento {reintentos}/8 en {espera}s...")
+                time.sleep(espera)
                 continue
-            print(f"❌ Error fatal en la subida: {type(e).__name__}: {e}")
+            print(f"❌ Error fatal subida: {type(e).__name__}: {e}")
             raise
-    print(f"✅ Video subido: https://youtu.be/{resp['id']}" + (f" (programado {publish_at})" if publish_at else ""))
+    print(f"✅ Video subido: https://youtu.be/{resp['id']}" +
+          (f" (programado {publish_at})" if publish_at else ""))
     return resp["id"]
 
 def extras_post_subida(youtube, vid, miniatura, srt, comentario):
     if miniatura and os.path.exists(miniatura):
         try:
-            youtube.thumbnails().set(videoId=vid, media_body=MediaFileUpload(miniatura, mimetype="image/jpeg")).execute()
+            youtube.thumbnails().set(
+                videoId=vid,
+                media_body=MediaFileUpload(miniatura, mimetype="image/jpeg")
+            ).execute()
             print("✅ Miniatura subida")
-        except Exception as e: print(f"⚠️ Miniatura: {e}")
+        except Exception as e:
+            print(f"⚠️ Miniatura: {e}")
     if srt and os.path.exists(srt):
         try:
-            youtube.captions().insert(part="snippet", body={"snippet": {"videoId": vid, "language": "es", "name": "Español", "isDraft": False}}, media_body=MediaFileUpload(srt, mimetype="application/octet-stream")).execute()
+            youtube.captions().insert(
+                part="snippet",
+                body={"snippet": {"videoId": vid, "language": "es",
+                                  "name": "Español", "isDraft": False}},
+                media_body=MediaFileUpload(srt, mimetype="application/octet-stream")
+            ).execute()
             print("✅ Subtítulos subidos")
-        except Exception as e: print(f"⚠️ Subtítulos: {e}")
+        except Exception as e:
+            print(f"⚠️ Subtítulos: {e}")
     if PLAYLIST_ID:
         try:
-            youtube.playlistItems().insert(part="snippet", body={"snippet": {"playlistId": PLAYLIST_ID, "resourceId": {"kind": "youtube#video", "videoId": vid}}}).execute()
+            youtube.playlistItems().insert(
+                part="snippet",
+                body={"snippet": {"playlistId": PLAYLIST_ID,
+                                  "resourceId": {"kind": "youtube#video", "videoId": vid}}}
+            ).execute()
             print("✅ Añadido a playlist")
-        except Exception as e: print(f"⚠️ Playlist: {e}")
+        except Exception as e:
+            print(f"⚠️ Playlist: {e}")
     if comentario:
         try:
-            youtube.commentThreads().insert(part="snippet", body={"snippet": {"videoId": vid, "topLevelComment": {"snippet": {"textOriginal": comentario}}}}).execute()
-            print("✅ Comentario publicado (fíjalo a mano en Studio)")
-        except Exception as e: print(f"⚠️ Comentario: {e}")
+            youtube.commentThreads().insert(
+                part="snippet",
+                body={"snippet": {"videoId": vid,
+                                  "topLevelComment": {"snippet": {"textOriginal": comentario}}}}
+            ).execute()
+            print("✅ Comentario publicado")
+        except Exception as e:
+            print(f"⚠️ Comentario: {e}\n   Para fijar: {comentario}")
 
 # =================================================================
-# SHORTS EMBUDO (2 VERSIONES)
+# SHORTS — 2 versiones
 # =================================================================
-def crear_short_version_1(segs_orig, plan, fondo, salida="short_v1.mp4"):
+def crear_short(segs_orig, fondo, indice, salida="short_final.mp4", modo="gancho"):
+    """modo: 'gancho' (inicio) o 'climax' (parte central)."""
     segs = [{**s} for s in segs_orig]
+    if modo == "gancho":
+        candidatos = segs[:8]
+    else:
+        total_segs = len(segs)
+        inicio = max(0, total_segs // 2 - 4)
+        candidatos = segs[inicio:inicio + 8]
     sel, t = [], 0.0
-    for s in segs:
-        if sel and t + s["dur"] > 45: break
-        sel.append(s)
-        t += s["dur"]
-        if t >= 35: break
-    t0 = 0.0
-    for s in sel:
-        s["inicio"] = t0
-        t0 += s["dur"]
-    t = t0
-    cta = generar_audio("¿Quieres conocer los otros puntos? El video completo ya está en el canal. Suscríbete.", "cta_v1", "conclusion")
-    escenas = construir_escenas(sel)
-    extras, total = [], t
-    if cta:
-        d = duracion_audio(cta)
-        extras.append(AudioFileClip(cta).set_start(t))
-        ult = escenas[-1]
-        escenas.append({**ult, "inicio": t, "dur": d + 0.6, "fade": False})
-        total = t + d + 0.6
-    audio, _ = mezclar_audio(sel, total, fondo, extras)
-    renderizar(escenas, total, audio, (1080, 1920), salida)
-    return salida
-
-def crear_short_version_2(segs_orig, plan, fondo, salida="short_v2.mp4"):
-    segs = [{**s} for s in segs_orig]
-    inicio_climax = None
-    for i, s in enumerate(segs):
-        if s["etapa"] == "desarrollo" and i > len(segs) // 2:
-            inicio_climax = i
+    for s in candidatos:
+        if sel and t + s["dur"] > 50:
             break
-    if inicio_climax is None: inicio_climax = len(segs) // 2
-    sel, t = [], 0.0
-    for i in range(inicio_climax, len(segs)):
-        s = segs[i]
-        if sel and t + s["dur"] > 50: break
         sel.append(s)
         t += s["dur"]
-        if t >= 35: break
+        if t >= 32:
+            break
+    if not sel:
+        return None
     t0 = 0.0
     for s in sel:
         s["inicio"] = t0
         t0 += s["dur"]
     t = t0
-    cta = generar_audio("Esto es solo una parte. Descubre el método completo en el video de hoy. Link en el canal.", "cta_v2", "conclusion")
+
+    cta = generar_audio(
+        "La historia completa ya está en el canal. Suscríbete para no perderte la siguiente.",
+        f"cta_{indice}", "conclusion")
     escenas = construir_escenas(sel)
     extras, total = [], t
     if cta:
@@ -1037,12 +1331,14 @@ def crear_short_version_2(segs_orig, plan, fondo, salida="short_v2.mp4"):
     return salida
 
 # =================================================================
-# MÚSICA Y VALIDACIONES
+# MÚSICA
 # =================================================================
 def buscar_archivo(nombre):
     for root, _, files in os.walk("."):
-        if "/." in root or "\\." in root: continue
-        if nombre in files: return os.path.join(root, nombre)
+        if "/." in root or "\\." in root:
+            continue
+        if nombre in files:
+            return os.path.join(root, nombre)
     return None
 
 def seleccionar_fondo(estado):
@@ -1058,14 +1354,22 @@ def seleccionar_fondo(estado):
     print("⚠️ Sin música de fondo")
     return None
 
+# =================================================================
+# VALIDACIONES
+# =================================================================
 def limpiar_temporales():
     for f in os.listdir("."):
-        if f.startswith("temp_") or f in ("video_final.mp4", "short_v1.mp4", "short_v2.mp4", "miniatura.jpg", "subtitulos.srt"):
-            try: os.remove(f)
-            except OSError: pass
+        if f.startswith("temp_") or f in ("video_final.mp4", "short_final.mp4",
+                                          "miniatura.jpg", "subtitulos.srt"):
+            try:
+                os.remove(f)
+            except OSError:
+                pass
 
 def verificar_envs():
-    faltan = [v for v in ("DEEPSEEK_API_KEY", "PEXELS_API_KEY", "CLOUDFLARE_ACCOUNT_ID", "CLOUDFLARE_API_TOKEN", "YOUTUBE_USER_TOKEN") if not os.getenv(v)]
+    faltan = [v for v in ("DEEPSEEK_API_KEY", "CLOUDFLARE_ACCOUNT_ID",
+                          "CLOUDFLARE_API_TOKEN", "YOUTUBE_USER_TOKEN")
+              if not os.getenv(v)]
     if faltan:
         print(f"❌ Faltan variables: {', '.join(faltan)}")
         sys.exit(1)
@@ -1073,7 +1377,22 @@ def verificar_envs():
     if yt is None:
         print("❌ YOUTUBE_USER_TOKEN inválido/expirado")
         sys.exit(1)
-    print("✅ Credenciales válidas.")
+    try:
+        yt.channels().list(part="id", mine=True).execute()
+        print("✅ Credenciales válidas.")
+    except HttpError as e:
+        err_str = str(e)
+        if "insufficientPermissions" in err_str:
+            print("⚠️ Token sin permiso de lectura. El bot publica igual.")
+        elif "401" in err_str or "invalid_grant" in err_str:
+            print(f"❌ YouTube token expirado: {e}")
+            sys.exit(1)
+        else:
+            print(f"❌ Error YouTube: {e}")
+            sys.exit(1)
+    except Exception as e:
+        print(f"❌ YouTube token inválido: {e}")
+        sys.exit(1)
     return yt
 
 # =================================================================
@@ -1083,154 +1402,209 @@ def main():
     youtube = verificar_envs()
     limpiar_temporales()
     estado = cargar_estado()
-    
-    if not deberia_publicar(estado):
+
+    if os.getenv("FORCE_PUBLISH") == "true":
+        print("⚡ FORCE_PUBLISH activo")
+    elif not deberia_publicar(estado):
         sys.exit(0)
-    
+
     print("=" * 70)
-    print("🧠 CÓDIGO MENTAL - BOT v1.0")
+    print("🧠 CÓDIGO MENTAL - BOT v2.0")
     print(f"📅 {datetime.now(TZ):%Y-%m-%d %H:%M} | 🎤 {VOZ_CANAL['voz']}")
-    print(f"📤 Estrategia: 1 Video Largo + 2 Shorts")
+    print(f"📤 1 Video Largo + 2 Shorts | 🎨 Flux SEG_ESCENA={SEG_ESCENA}s")
     print("=" * 70)
-    
+
     actualizar_rendimiento(youtube, estado)
     tema = elegir_tema(estado, youtube)
     contexto = random.choice(tema["contextos"])
     formato = random.choice(FORMATOS_NARRACION)
-    print(f"🎭 Formato: {formato['nombre']}")
-    
-    sugerencias = list(dict.fromkeys(sugerencias_youtube(tema["seed"]) + sugerencias_youtube("psicologia " + tema["keywords"][0])))[:10]
+    perfil = random.choice(PERFILES_NARRADOR)
+    print(f"🎭 Formato: {formato['nombre']} | Narrador: {perfil}")
+
+    sugerencias = list(dict.fromkeys(
+        sugerencias_youtube(tema["seed"]) +
+        sugerencias_youtube("psicología " + tema["keywords"][0])
+    ))[:10]
+
     fondo = seleccionar_fondo(estado)
-    titulos_previos = cargar_json(TITULOS_LARGOS_FILE, {"titulos": []})["titulos"][-20:]
-    
+    titulos_previos = cargar_json(TITULOS_FILE, {"titulos": []})["titulos"][-20:]
+
     plan = titulo = None
     for intento in range(4):
         try:
-            plan = generar_plan(tema, contexto, sugerencias, titulos_previos, formato_narracion=formato)
+            plan = generar_plan(tema, contexto, sugerencias, titulos_previos, formato, perfil)
             if plan.get("palabras_clave") and tema_ya_usado(" ".join(map(str, plan["palabras_clave"]))):
                 raise ValueError("tema repetido")
-            titulo = elegir_titulo(plan["titulos"])
-            if not titulo: raise ValueError("sin título válido")
+            titulo = elegir_titulo(plan["titulos"], plan.get("dato_contraintuitivo", ""))
+            if not titulo:
+                raise ValueError("sin título válido")
+            plan["_formato_instruccion"] = formato["instruccion"]
+            plan["_perfil_narrador"]     = perfil
+            plan["_nombre_formato"]      = formato["nombre"]
             break
         except Exception as e:
             print(f"⚠️ Plan intento {intento+1}/4: {e}")
             plan = None
             time.sleep(5)
     if not plan:
-        print("❌ No se pudo generar un plan válido.")
+        print("❌ No se pudo generar plan válido.")
         sys.exit(1)
-    
+
     print(f"📌 Título: {titulo}")
     print(f"🎯 Dato contraintuitivo: {plan.get('dato_contraintuitivo', 'N/A')}")
-    
-    capitulos_txt = generar_capitulos(plan, tema, contexto)
-    segs = crear_segmentos(capitulos_txt)
-    print(f"🧩 {len(segs)} segmentos, {sum(len(c.split()) for c in capitulos_txt)} palabras")
-    
+
+    puntos_txt = generar_puntos(plan, tema, contexto)
+    n_puntos = len(puntos_txt)
+    segs = crear_segmentos(puntos_txt)
+    print(f"🧩 {len(segs)} segmentos, {sum(len(p.split()) for p in puntos_txt)} palabras")
+
     segs = sintetizar(segs)
     total = construir_timeline(segs)
-    
+
     intentos = 0
     while total < DURACION_MINIMA_SEGUNDOS and intentos < MAX_INTENTOS_EXPANSION:
-        print(f"⚠️ {total/60:.1f} min < mínimo. Expandiendo...")
-        # Lógica de expansión simplificada para mantener el flujo
+        print(f"⚠️ {total/60:.1f} min < mínimo. Expandiendo ({intentos+1})...")
+        extra = expandir_texto(titulo, " ".join(s["texto"] for s in segs))
         intentos += 1
-        total += 30 # Simulación de expansión para no bloquear, en producción usar la función expandir_texto
-    
+        if not extra:
+            break
+        nuevos = [{"punto": n_puntos - 1, "texto": p, "punto_ini": False,
+                   "etapa": "conclusion", "id": f"x{intentos}_{k}", "expansion": True}
+                  for k, p in enumerate(dividir_en_segmentos(extra))]
+        segs += sintetizar(nuevos)
+        total = construir_timeline(segs)
+
     if total > DURACION_MAXIMA_SEGUNDOS:
         print(f"⚠️ {total/60:.1f} min > máximo. Recortando...")
-        while total > DURACION_MAXIMA_SEGUNDOS and len(segs) > 10:
-            segs.pop()
+        while total > DURACION_MAXIMA_SEGUNDOS:
+            idx = next((i for i in range(len(segs) - 1, -1, -1) if segs[i].get("expansion")), None)
+            if idx is None:
+                break
+            segs.pop(idx)
             total = construir_timeline(segs)
-    
+
     if total < DURACION_MINIMA_SEGUNDOS:
         print("❌ Duración insuficiente. Abortando.")
         sys.exit(1)
-    
+
+    outro = [{"punto": n_puntos - 1, "texto": random.choice(OUTROS), "punto_ini": False,
+              "etapa": "conclusion", "id": "outro", "outro": True}]
+    segs += sintetizar(outro)
+    total = construir_timeline(segs)
     print(f"⏱️ Duración final: {total/60:.1f} min")
-    
-    consultas = planificar_consultas(segs, tema, None)
+
+    # ============ PLANIFICACIÓN VISUAL POR IA + GENERACIÓN FLUX ============
+    print("🎨 Planificando visuales con IA...")
+    prompts_visuales = planificar_visuales(segs, tema)
+
     for i, s in enumerate(segs):
-        n = max(1, round(s["dur"] / SEG_ESCENA))
-        print(f"🖼️ {i+1}/{len(segs)} [{s['etapa']}] '{consultas[i]}' x{n}")
-        s["medios"] = obtener_medios(i, s["etapa"], consultas[i], n, tema)
-    
+        n_imgs = max(1, round(s["dur_audio"] / SEG_ESCENA))
+        prompt_visual = prompts_visuales[i] if i < len(prompts_visuales) else "cinematic dark moody professional scene"
+        print(f"🖼️ {i+1}/{len(segs)} [{s['etapa']}] '{prompt_visual}' x{n_imgs}")
+        medios = []
+        for k in range(n_imgs):
+            ruta = generar_imagen_cloudflare(prompt_visual, f"{i}_{k}")
+            if not ruta:
+                ruta = imagen_fallback(f"{i}_{k}")
+            medios.append(ruta)
+        s["medios"] = medios
+
+    # ============ CAPÍTULOS TIMESTAMPS ============
     caps_ts = []
-    for c in range(len(capitulos_txt)):
-        primero = next((s for s in segs if s["cap"] == c), None)
-        nombre = str(plan["puntos_clave"][c].get("titulo", f"Punto {c+1}"))[:50] if c < len(plan["puntos_clave"]) else f"Punto {c+1}"
-        if primero: caps_ts.append((fmt_ts(primero["inicio"]), nombre))
-    caps_ts[0] = ("00:00", caps_ts[0][1])
-    
+    for p in range(n_puntos):
+        primero = next((s for s in segs if s["punto"] == p), None)
+        nombre = (str(plan["puntos"][p].get("titulo", f"Punto {p+1}"))[:50]
+                  if p < len(plan["puntos"]) else f"Punto {p+1}")
+        if primero:
+            caps_ts.append((fmt_ts(primero["inicio"]), nombre))
+    if caps_ts:
+        caps_ts[0] = ("00:00", caps_ts[0][1])
+
     hashtags = construir_hashtags(tema)
     descripcion = construir_descripcion(plan, tema, caps_ts, sugerencias, hashtags)
     tags = construir_tags(plan, tema, sugerencias)
     srt = generar_srt(segs, "subtitulos.srt")
-    
-    portada = plan.get("palabras_portada", ["DESCÚBRELO AHORA"])[0] if plan.get("palabras_portada") else "DESCÚBRELO AHORA"
-    base_mini = elegir_base_miniatura(re.sub(r"[^a-zA-Z ]", " ", str(plan.get("miniatura_escena", "brain abstract dark"))) or "brain abstract dark")
+
+    # ============ MINIATURA ============
+    portada = elegir_texto_portada(plan.get("palabras_portada"), titulo)
+    escena_mini = str(plan.get("miniatura_escena", "professional psychology cinematic dark"))
+    base_mini = generar_imagen_cloudflare(escena_mini + " for thumbnail", "thumb")
+    if not base_mini:
+        base_mini = imagen_fallback("thumb")
     miniatura = "miniatura.jpg" if crear_miniatura(base_mini, portada, "miniatura.jpg") else None
-    
+
+    # ============ RENDER VIDEO LARGO ============
     escenas = construir_escenas(segs)
     audio, _ = mezclar_audio(segs, total, fondo)
     print("🎬 Renderizando video largo...")
     renderizar(escenas, total, audio, (W, H), "video_final.mp4")
-    
-    # =================================================================
-    # CALCULAR HORARIOS CON VARIACIONES
-    # =================================================================
-    slot_largo = calcular_slot_con_variacion(HORA_LARGO, VARIACION_MINUTOS_LARGO)
-    slot_short_1 = calcular_slot_con_variacion(HORA_SHORT_1, VARIACION_MINUTOS_SHORT_1)
-    slot_short_2 = calcular_slot_con_variacion(HORA_SHORT_2, VARIACION_MINUTOS_SHORT_2)
-    
-    print(f"🕖 Video Largo: {slot_largo:%Y-%m-%d %H:%M} CDMX")
-    print(f"📱 Short 1: {slot_short_1:%Y-%m-%d %H:%M} CDMX")
-    print(f"📱 Short 2: {slot_short_2:%Y-%m-%d %H:%M} CDMX")
-    
-    # =================================================================
-    # SUBIR VIDEO LARGO
-    # =================================================================
-    vid_largo = subir_video(youtube, "video_final.mp4", titulo, descripcion, tags, utc_iso(slot_largo))
-    comentario = str(plan.get("pregunta_comentario") or "¿Cuál de estos puntos te sorprendió más? Te leo 👇")
-    extras_post_subida(youtube, vid_largo, miniatura, srt, comentario)
-    
-    # =================================================================
-    # GENERAR Y SUBIR SHORTS
-    # =================================================================
-    vid_short_1, vid_short_2 = None, None
+
+    # ============ PROGRAMACIÓN ============
+    if PROGRAMAR_PICO:
+        slot_largo = proximo_slot(HORA_LARGO, VARIACION_MINUTOS_LARGO)
+        slot_short1 = proximo_slot(HORA_SHORT_1, VARIACION_MINUTOS_SHORT_1, min_offset=15)
+        slot_short2 = proximo_slot(HORA_SHORT_2, VARIACION_MINUTOS_SHORT_2, min_offset=15)
+        print(f"🕖 Video Largo: {slot_largo:%Y-%m-%d %H:%M} CDMX")
+        print(f"📱 Short 1: {slot_short1:%Y-%m-%d %H:%M} CDMX")
+        print(f"📱 Short 2: {slot_short2:%Y-%m-%d %H:%M} CDMX")
+    else:
+        slot_largo = slot_short1 = slot_short2 = None
+        print("📤 Publicación inmediata")
+
+    # ============ SUBIR VIDEO LARGO ============
+    vid = subir_video(youtube, "video_final.mp4", titulo, descripcion, tags,
+                      utc_iso(slot_largo) if slot_largo else None)
+    comentario = str(plan.get("pregunta_comentario") or "¿Qué opinas? Te leo 👇")
+    extras_post_subida(youtube, vid, miniatura, srt, comentario)
+
+    # ============ 2 SHORTS ============
     if GENERAR_SHORT:
         try:
-            print("🎞️ Creando Short Versión 1 (Gancho + Primer Punto)...")
-            crear_short_version_1(segs, plan, fondo, "short_v1.mp4")
-            t_short_1 = f"🚨 {plan.get('dato_contraintuitivo', 'Dato impactante')} #Shorts"
-            d_short_1 = f"¿Sabías esto? Descubre los puntos completos en el video de hoy 👉\n\n🔗 Video completo: https://youtu.be/{vid_largo}\n\nSuscríbete: {CANAL_LINK}?sub_confirmation=1\n\n#Shorts #psicologia #desarrollopersonal"
-            vid_short_1 = subir_video(youtube, "short_v1.mp4", t_short_1[:100], d_short_1, tags[:15] + ["shorts"], utc_iso(slot_short_1))
-            print(f"✅ Short 1 subido: https://youtu.be/{vid_short_1}")
+            print("🎞️ Creando Short Versión 1 (Gancho)...")
+            s1 = crear_short(segs, fondo, 1, "short_1.mp4", modo="gancho")
+            if s1:
+                titulo_base = str(plan.get("titulo_short") or titulo)[:88]
+                t_short1 = titulo_base + " #Shorts"
+                d_short1 = (f"Video completo 👉 https://youtu.be/{vid}\n\n"
+                            f"Suscríbete: {CANAL_LINK}?sub_confirmation=1\n\n"
+                            f"#Shorts {hashtags}" +
+                            (DISCLOSURE_TEXT if ACTIVAR_DISCLOSURE_IA else ""))
+                subir_video(youtube, "short_1.mp4", t_short1, d_short1,
+                            tags[:15] + ["shorts"], utc_iso(slot_short1) if slot_short1 else None)
+                print(f"✅ Short 1 subido")
         except Exception as e:
             print(f"⚠️ Short 1 falló: {e}")
-        
+
         try:
-            print("🎞️ Creando Short Versión 2 (Clímax del Video)...")
-            crear_short_version_2(segs, plan, fondo, "short_v2.mp4")
-            t_short_2 = f"🤫 El punto que NADIE te cuenta... #Shorts"
-            d_short_2 = f"Esto es solo una parte del video de hoy. ¿Te atreves a ver el método completo?\n\n🔗 Video completo: https://youtu.be/{vid_largo}\n\nSuscríbete para más: {CANAL_LINK}?sub_confirmation=1\n\n#Shorts #psicologiaoscura #mentehumana"
-            vid_short_2 = subir_video(youtube, "short_v2.mp4", t_short_2[:100], d_short_2, tags[:15] + ["shorts"], utc_iso(slot_short_2))
-            print(f"✅ Short 2 subido: https://youtu.be/{vid_short_2}")
+            print("🎞️ Creando Short Versión 2 (Clímax)...")
+            s2 = crear_short(segs, fondo, 2, "short_2.mp4", modo="climax")
+            if s2:
+                t_short2 = str(plan.get("titulo_short") or titulo)[:80] + " 🤯 #Shorts"
+                d_short2 = (f"Video completo 👉 https://youtu.be/{vid}\n\n"
+                            f"Suscríbete: {CANAL_LINK}?sub_confirmation=1\n\n"
+                            f"#Shorts {hashtags}" +
+                            (DISCLOSURE_TEXT if ACTIVAR_DISCLOSURE_IA else ""))
+                subir_video(youtube, "short_2.mp4", t_short2, d_short2,
+                            tags[:15] + ["shorts"], utc_iso(slot_short2) if slot_short2 else None)
+                print(f"✅ Short 2 subido")
         except Exception as e:
             print(f"⚠️ Short 2 falló: {e}")
-    
-    # =================================================================
-    # ACTUALIZAR ESTADO
-    # =================================================================
+
+    # ============ GUARDAR ESTADO ============
     ahora = datetime.now(TZ).isoformat()
-    guardar_titulo_largo(titulo)
+    guardar_titulo(titulo)
     guardar_tema(tema["tema"])
-    estado["videos"].append({"id": vid_largo, "titulo": titulo, "tema": tema["tema"], "formato": formato["nombre"], "fecha": ahora, "shorts": [vid_short_1, vid_short_2] if GENERAR_SHORT else []})
+    estado["videos"].append({
+        "id": vid, "titulo": titulo, "tema": tema["tema"],
+        "formato": formato["nombre"], "perfil": perfil,
+        "dato_contraintuitivo": plan.get("dato_contraintuitivo"),
+        "fecha": ahora,
+    })
     estado["videos"] = estado["videos"][-60:]
     estado["temas_recientes"] = (estado["temas_recientes"] + [tema["tema"]])[-6:]
     estado["ultima_publicacion"] = ahora
-    guardar_json(MUSICA_ESTADO_FILE, estado)
-    
+    guardar_json(ESTADO_FILE, estado)
+
     limpiar_temporales()
     print("🎉 Proceso completado: 1 video largo + 2 shorts programados.")
 
