@@ -5,7 +5,7 @@ on:
     # Se ejecuta todos los días a las 12:00 UTC (06:00 AM en CDMX).
     # Esto le da al bot 2 horas para generar el video y programarlo a las 8:00 AM (con variación).
     - cron: '0 12 * * *'
-  workflow_dispatch: # Permite ejecutarlo manualmente desde la pestaña "Actions" de GitHub si lo necesitas
+  workflow_dispatch: # Permite ejecutarlo manualmente desde la pestaña "Actions" de GitHub
 
 jobs:
   publicar-video:
@@ -32,8 +32,12 @@ jobs:
 
     - name: Ejecutar Bot de Psicología (1 Largo + 2 Shorts)
       env:
+        # API Keys seguras desde los Secrets del repositorio
         DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
-        DEEPSEEK_MODEL: ${{ secrets.DEEPSEEK_MODEL }}
+        
+        # Forzamos el modelo aquí para evitar que llegue vacío y cause Error 400
+        DEEPSEEK_MODEL: "deepseek-chat"
+        
         PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
         CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -48,7 +52,9 @@ jobs:
         HORA_SHORT_2: 15
         VARIACION_MINUTOS_SHORT_2: 60
         
+        # Banderas de ejecución
         GENERAR_SHORT: "true"
         PROGRAMAR_PICO: "true"
         INTERVALO_MIN_HORAS: "24"
+        
       run: python bt_yt_psico.py
