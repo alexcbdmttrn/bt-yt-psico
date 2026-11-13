@@ -1,16 +1,17 @@
 # -*- coding: utf-8 -*-
 """
-CÓDIGO MENTAL - Bot v2.2 ELITE MASTER PREMIUM
-Cambios v2.2 sobre v2.1:
-  - Fallback de 4 niveles: Cloudflare → Pool Flux → Pexels → Gradiente
-  - Pool de imágenes Flux reutilizables (ahorra API y mantiene calidad)
-  - Pexels restaurado como fallback real (no solo gradiente)
-  - Rotación inteligente del pool (no repite la misma imagen dos veces seguidas)
+CÓDIGO MENTAL - Bot v2.3 ELITE MASTER PREMIUM
+Cambios v2.3 sobre v2.2:
+  - grade() y vignette() aclarados para que shorts verticales no se vean negros en móvil
+  - Detección de % de gradientes en short (SKIP si >40%)
+  - Reemplazo automático de gradientes del short con imágenes del pool Flux
+v2.2:
+  - Fallback 4 niveles: Cloudflare → Pool Flux → Pexels → Gradiente
 v2.1:
   - Duración video 8-12 min, palabras por punto 320-400
   - Shorts 35-42 seg
-  - Programación slots batch MISMO DÍA (fix bug de días cruzados)
-  - Descripción SEO elite, tags estratégicos, CTA rotativos
+  - Programación slots batch MISMO DÍA
+  - SEO elite (keyword en línea 1, tags mix, hashtags 5)
 """
 import asyncio
 import bisect
@@ -61,7 +62,7 @@ CLOUDFLARE_ACCOUNT_ID = os.getenv("CLOUDFLARE_ACCOUNT_ID")
 CLOUDFLARE_API_TOKEN  = os.getenv("CLOUDFLARE_API_TOKEN")
 CLOUDFLARE_MODEL      = "@cf/black-forest-labs/flux-1-schnell"
 
-PEXELS_API_KEY = os.getenv("PEXELS_API_KEY")   # fallback opcional
+PEXELS_API_KEY = os.getenv("PEXELS_API_KEY")
 
 YOUTUBE_USER_TOKEN = json.loads(os.getenv("YOUTUBE_USER_TOKEN") or "{}")
 PLAYLIST_ID        = os.getenv("YOUTUBE_PLAYLIST_ID", "")
@@ -826,26 +827,20 @@ def construir_timeline(segs):
     return t
 
 # =================================================================
-# POOL DE IMÁGENES FLUX (fallback nivel 2)
+# POOL DE IMÁGENES FLUX
 # =================================================================
-POOL_FLUX = []          # rutas de imágenes Flux ya generadas
-POOL_FLUX_INDEX = 0     # índice circular para rotación
-USADOS_PEXELS = set()   # URLs de Pexels ya usadas (evitar duplicados)
+POOL_FLUX = []
+POOL_FLUX_INDEX = 0
+USADOS_PEXELS = set()
 
 def registrar_imagen_flux(ruta):
-    """Añade una imagen Flux al pool para reutilización futura."""
     if ruta and os.path.exists(ruta) and ruta not in POOL_FLUX:
         POOL_FLUX.append(ruta)
 
 def reutilizar_imagen_flux(idx):
-    """
-    Fallback nivel 2: recicla una imagen Flux ya generada.
-    Rotación circular para evitar repetir la misma dos veces seguidas.
-    """
     global POOL_FLUX_INDEX
     if not POOL_FLUX:
         return None
-    # Copia física para que el render no comparta archivo con otro segmento
     original = POOL_FLUX[POOL_FLUX_INDEX % len(POOL_FLUX)]
     POOL_FLUX_INDEX += 1
     try:
@@ -859,7 +854,7 @@ def reutilizar_imagen_flux(idx):
         return None
 
 # =================================================================
-# CLOUDFLARE FLUX (fallback nivel 1)
+# CLOUDFLARE FLUX
 # =================================================================
 ANTI_DEFORM = (", cinematic wide shot, professional lighting, highly detailed, "
                "photorealistic, 8k, no text, no deformed faces, no mutated hands, "
@@ -896,7 +891,7 @@ def generar_imagen_cloudflare(prompt_en, idx, intentos=3):
                         continue
                 if os.path.exists(ruta) and os.path.getsize(ruta) > 1000:
                     print(f"   ✅ Imagen Cloudflare generada")
-                    registrar_imagen_flux(ruta)   # ← añadir al pool
+                    registrar_imagen_flux(ruta)
                     return ruta
             else:
                 print(f"   ⚠️ Cloudflare {r.status_code}: {r.text[:150]}")
@@ -906,7 +901,7 @@ def generar_imagen_cloudflare(prompt_en, idx, intentos=3):
     return None
 
 # =================================================================
-# PEXELS (fallback nivel 3)
+# PEXELS
 # =================================================================
 def pexels_get(url, params, intentos=3):
     for i in range(intentos):
@@ -940,7 +935,6 @@ def buscar_fotos_pexels(query, cantidad=1):
     return []
 
 def imagen_fallback_pexels(prompt_en, idx):
-    """Fallback nivel 3: foto real de Pexels con el mismo prompt."""
     if not PEXELS_API_KEY:
         return None
     query = " ".join(prompt_en.split()[:4])
@@ -954,10 +948,9 @@ def imagen_fallback_pexels(prompt_en, idx):
     return None
 
 # =================================================================
-# GRADIENTE OSCURO (fallback nivel 4 - survival)
+# GRADIENTE OSCURO (fallback nivel 4)
 # =================================================================
 def imagen_fallback(idx):
-    """Último recurso: gradiente oscuro. Nunca falla, nunca crashea."""
     img = Image.new("RGB", (W, H), (10, 15, 25))
     draw = ImageDraw.Draw(img)
     for y in range(H):
@@ -1011,7 +1004,7 @@ Responde SOLO JSON: {{"consultas": ["..."]}} con exactamente {len(lote)} element
 _VIG = {}
 
 def vignette(size, base=1.0, fuerza=0.55):
-    k = (size, base)
+    k = (size, base, fuerza)
     if k not in _VIG:
         w, h = size
         y, x = np.ogrid[-1:1:h * 1j, -1:1:w * 1j]
@@ -1019,18 +1012,20 @@ def vignette(size, base=1.0, fuerza=0.55):
         _VIG[k] = ((1 - fuerza * d ** 2.2) * base).astype(np.float32)[..., None]
     return _VIG[k]
 
+# ⚡ v2.3: grade aclarado para shorts verticales
 def grade(img, etapa):
-    img = ImageEnhance.Color(img).enhance(0.85)
-    img = ImageEnhance.Contrast(img).enhance({"gancho": 1.20, "conclusion": 1.10}.get(etapa, 1.15))
-    img = ImageEnhance.Brightness(img).enhance({"gancho": 0.90, "conclusion": 0.95}.get(etapa, 0.92))
-    return Image.blend(img, Image.new("RGB", img.size, (12, 18, 32)), 0.08)
+    img = ImageEnhance.Color(img).enhance(0.92)
+    img = ImageEnhance.Contrast(img).enhance({"gancho": 1.10, "conclusion": 1.05}.get(etapa, 1.08))
+    img = ImageEnhance.Brightness(img).enhance({"gancho": 1.02, "conclusion": 1.02}.get(etapa, 1.02))
+    return Image.blend(img, Image.new("RGB", img.size, (12, 18, 32)), 0.03)
 
 class RenderEscenas:
     def __init__(self, escenas, size, total):
         self.esc, self.size, self.total = escenas, size, total
         self.starts = [e["inicio"] for e in escenas]
         self._ikey = self._img = None
-        self.vig_img = vignette(size, 1.0)
+        # ⚡ v2.3: vignette reducido a 0.30
+        self.vig_img = vignette(size, 1.0, 0.30)
 
     def cerrar(self):
         pass
@@ -1040,7 +1035,7 @@ class RenderEscenas:
         if self._ikey != key:
             sz = (int(self.size[0] * 1.2), int(self.size[1] * 1.2))
             im = ImageOps.fit(Image.open(e["path"]).convert("RGB"), sz, Image.LANCZOS)
-            arr = np.asarray(grade(im, e["etapa"]), dtype=np.float32) * vignette(sz, 1.0)
+            arr = np.asarray(grade(im, e["etapa"]), dtype=np.float32) * vignette(sz, 1.0, 0.30)
             self._img, self._ikey = Image.fromarray(arr.astype(np.uint8)), key
         return self._img
 
@@ -1165,14 +1160,14 @@ def crear_miniatura(img_path, texto, salida):
         img = ImageEnhance.Contrast(img).enhance(1.45)
         img = ImageEnhance.Color(img).enhance(1.35)
         img = ImageEnhance.Sharpness(img).enhance(2.0)
-        img = ImageEnhance.Brightness(img).enhance(0.90)
+        img = ImageEnhance.Brightness(img).enhance(0.95)
 
         grad = Image.new("L", (TW, TH), 0)
         gd = ImageDraw.Draw(grad)
         for x in range(TW):
             gd.line([(x, 0), (x, TH)], fill=int(240 * max(0, 1 - x / (TW * 0.65)) ** 1.6))
         img = Image.composite(Image.new("RGB", (TW, TH), (0, 0, 0)), img, grad)
-        arr = np.asarray(img, dtype=np.float32) * vignette((TW, TH), 1.0, 0.55)
+        arr = np.asarray(img, dtype=np.float32) * vignette((TW, TH), 1.0, 0.40)
         img = Image.fromarray(arr.astype(np.uint8)).convert("RGBA")
 
         lineas = dividir_lineas(texto.upper().split()[:4])
@@ -1458,7 +1453,7 @@ def extras_post_subida(youtube, vid, miniatura, srt, comentario):
             print(f"⚠️ Comentario: {e}\n   Para fijar: {comentario}")
 
 # =================================================================
-# SHORTS
+# SHORTS (con parches v2.3)
 # =================================================================
 def crear_short(segs_orig, fondo, indice, salida="short_final.mp4", modo="gancho"):
     segs = [{**s} for s in segs_orig]
@@ -1480,6 +1475,36 @@ def crear_short(segs_orig, fondo, indice, salida="short_final.mp4", modo="gancho
     if not sel:
         return None
     print(f"   📱 Short {indice} contenido: {t:.1f}s (+ CTA ≈ {t+6:.1f}s total)")
+
+    # ⚡ PARCHE 3 v2.3: Reemplazar gradientes con imágenes del pool antes de renderizar
+    for s in sel:
+        nuevos_medios = []
+        for m in s.get("medios", []):
+            if "gradient" in m or "fallback" in m:
+                replacement = reutilizar_imagen_flux(f"short_fix_{indice}_{len(nuevos_medios)}")
+                if replacement:
+                    print(f"   🔧 Reemplazando gradiente con imagen del pool en short {indice}")
+                    nuevos_medios.append(replacement)
+                else:
+                    nuevos_medios.append(m)
+            else:
+                nuevos_medios.append(m)
+        s["medios"] = nuevos_medios
+
+    # ⚡ PARCHE 2 v2.3: Verificar % de gradientes antes de renderizar
+    fallback_count = 0
+    total_imgs = 0
+    for s in sel:
+        for m in s.get("medios", []):
+            total_imgs += 1
+            if "gradient" in m or "fallback" in m:
+                fallback_count += 1
+    if total_imgs > 0:
+        pct = fallback_count / total_imgs
+        print(f"   🔍 Short {indice}: {fallback_count}/{total_imgs} imágenes son gradientes ({pct*100:.0f}%)")
+        if pct > 0.4:
+            print(f"   ❌ Short {indice} tiene demasiadas imágenes de fallback ({pct*100:.0f}%). SKIP para no subir algo negro.")
+            return None
 
     t0 = 0.0
     for s in sel:
@@ -1597,10 +1622,11 @@ def main():
         sys.exit(0)
 
     print("=" * 70)
-    print("🧠 CÓDIGO MENTAL - BOT v2.2 ELITE MASTER PREMIUM")
+    print("🧠 CÓDIGO MENTAL - BOT v2.3 ELITE MASTER PREMIUM")
     print(f"📅 {datetime.now(TZ):%Y-%m-%d %H:%M} | 🎤 {VOZ_CANAL['voz']}")
     print(f"📤 1 Video Largo (8-12 min) + 2 Shorts (35-42s) | 🎨 Flux SEG_ESCENA={SEG_ESCENA}s")
     print(f"🛡️  Fallback: Cloudflare → Pool Flux → Pexels → Gradiente")
+    print(f"🔍 Verificación anti-short-negro: ACTIVA")
     print("=" * 70)
 
     actualizar_rendimiento(youtube, estado)
@@ -1682,7 +1708,7 @@ def main():
     total = construir_timeline(segs)
     print(f"⏱️ Duración final: {total/60:.1f} min")
 
-    # ============ GENERACIÓN DE IMÁGENES CON 4 NIVELES DE FALLBACK ============
+    # ============ IMÁGENES CON 4 NIVELES DE FALLBACK ============
     print("🎨 Planificando visuales con IA...")
     prompts_visuales = planificar_visuales(segs, tema)
 
@@ -1694,22 +1720,18 @@ def main():
         medios = []
         for k in range(n_imgs):
             img_id = f"{i}_{k}"
-            # Nivel 1: Cloudflare Flux
             ruta = generar_imagen_cloudflare(prompt_visual, img_id)
             if ruta:
                 stats["flux"] += 1
             else:
-                # Nivel 2: Pool de imágenes Flux ya generadas
                 ruta = reutilizar_imagen_flux(img_id)
                 if ruta:
                     stats["pool"] += 1
                 else:
-                    # Nivel 3: Pexels
                     ruta = imagen_fallback_pexels(prompt_visual, img_id)
                     if ruta:
                         stats["pexels"] += 1
                     else:
-                        # Nivel 4: Gradiente (survival)
                         print(f"   ⚠️ Cloudflare+Pool+Pexels fallaron, usando gradiente")
                         ruta = imagen_fallback(img_id)
                         stats["gradient"] += 1
@@ -1784,26 +1806,28 @@ def main():
         try:
             print("🎞️ Creando Short Versión 1 (Gancho)...")
             s1 = crear_short(segs, fondo, 1, "short_1.mp4", modo="gancho")
-            if not s1 or not os.path.exists(s1):
-                raise RuntimeError("crear_short devolvió None o archivo inexistente")
-            print(f"   ✅ Short 1 renderizado: {os.path.getsize(s1) // 1024} KB")
-
-            titulo_base = str(plan.get("titulo_short") or titulo)[:88]
-            t_short1 = titulo_base + " #Shorts"
-            kws = plan.get("palabras_clave", [])
-            kw_tag = "#" + _ascii_tag_yt(kws[0]).replace(" ", "") if kws else "#Psicologia"
-            d_short1 = (f"{kws[0].title() if kws else 'Psicología'}: {titulo_base[:60]}\n\n"
-                        f"📺 Video completo 👉 https://youtu.be/{vid}\n\n"
-                        f"🔔 Suscríbete: {CANAL_LINK}?sub_confirmation=1\n\n"
-                        f"#Shorts {kw_tag} {hashtags}" +
-                        (DISCLOSURE_TEXT if ACTIVAR_DISCLOSURE_IA else ""))
-            vid_s1 = subir_video(youtube, "short_1.mp4", t_short1, d_short1,
-                                 tags[:15] + ["shorts"],
-                                 utc_iso(slot_short1) if slot_short1 else None)
-            if not vid_s1:
-                raise RuntimeError("subir_video no devolvió ID")
-            print(f"✅ Short 1 subido: https://youtu.be/{vid_s1}")
-            shorts_creados.append(("Short 1", vid_s1))
+            if s1 is None:
+                print("   ⏭️ Short 1 fue SKIPeado (demasiados gradientes). No se sube.")
+            elif not os.path.exists(s1):
+                raise RuntimeError("archivo short_1.mp4 no existe")
+            else:
+                print(f"   ✅ Short 1 renderizado: {os.path.getsize(s1) // 1024} KB")
+                titulo_base = str(plan.get("titulo_short") or titulo)[:88]
+                t_short1 = titulo_base + " #Shorts"
+                kws = plan.get("palabras_clave", [])
+                kw_tag = "#" + _ascii_tag_yt(kws[0]).replace(" ", "") if kws else "#Psicologia"
+                d_short1 = (f"{kws[0].title() if kws else 'Psicología'}: {titulo_base[:60]}\n\n"
+                            f"📺 Video completo 👉 https://youtu.be/{vid}\n\n"
+                            f"🔔 Suscríbete: {CANAL_LINK}?sub_confirmation=1\n\n"
+                            f"#Shorts {kw_tag} {hashtags}" +
+                            (DISCLOSURE_TEXT if ACTIVAR_DISCLOSURE_IA else ""))
+                vid_s1 = subir_video(youtube, "short_1.mp4", t_short1, d_short1,
+                                     tags[:15] + ["shorts"],
+                                     utc_iso(slot_short1) if slot_short1 else None)
+                if not vid_s1:
+                    raise RuntimeError("subir_video no devolvió ID")
+                print(f"✅ Short 1 subido: https://youtu.be/{vid_s1}")
+                shorts_creados.append(("Short 1", vid_s1))
         except Exception as e:
             print(f"❌ Short 1 FALLÓ: {type(e).__name__}: {e}")
             traceback.print_exc()
@@ -1814,23 +1838,27 @@ def main():
         try:
             print("🎞️ Creando Short Versión 2 (Clímax)...")
             s2 = crear_short(segs, fondo, 2, "short_2.mp4", modo="climax")
-            if not s2 or not os.path.exists(s2):
-                raise RuntimeError("crear_short devolvió None o archivo inexistente")
-            print(f"   ✅ Short 2 renderizado: {os.path.getsize(s2) // 1024} KB")
-
-            t_short2 = str(plan.get("titulo_short") or titulo)[:80] + " 🤯 #Shorts"
-            d_short2 = (f"{kws[0].title() if kws else 'Psicología'}: {str(plan.get('titulo_short') or titulo)[:60]}\n\n"
-                        f"📺 Video completo 👉 https://youtu.be/{vid}\n\n"
-                        f"🔔 Suscríbete: {CANAL_LINK}?sub_confirmation=1\n\n"
-                        f"#Shorts {kw_tag} {hashtags}" +
-                        (DISCLOSURE_TEXT if ACTIVAR_DISCLOSURE_IA else ""))
-            vid_s2 = subir_video(youtube, "short_2.mp4", t_short2, d_short2,
-                                 tags[:15] + ["shorts"],
-                                 utc_iso(slot_short2) if slot_short2 else None)
-            if not vid_s2:
-                raise RuntimeError("subir_video no devolvió ID")
-            print(f"✅ Short 2 subido: https://youtu.be/{vid_s2}")
-            shorts_creados.append(("Short 2", vid_s2))
+            if s2 is None:
+                print("   ⏭️ Short 2 fue SKIPeado (demasiados gradientes). No se sube.")
+            elif not os.path.exists(s2):
+                raise RuntimeError("archivo short_2.mp4 no existe")
+            else:
+                print(f"   ✅ Short 2 renderizado: {os.path.getsize(s2) // 1024} KB")
+                t_short2 = str(plan.get("titulo_short") or titulo)[:80] + " 🤯 #Shorts"
+                kws = plan.get("palabras_clave", [])
+                kw_tag = "#" + _ascii_tag_yt(kws[0]).replace(" ", "") if kws else "#Psicologia"
+                d_short2 = (f"{kws[0].title() if kws else 'Psicología'}: {str(plan.get('titulo_short') or titulo)[:60]}\n\n"
+                            f"📺 Video completo 👉 https://youtu.be/{vid}\n\n"
+                            f"🔔 Suscríbete: {CANAL_LINK}?sub_confirmation=1\n\n"
+                            f"#Shorts {kw_tag} {hashtags}" +
+                            (DISCLOSURE_TEXT if ACTIVAR_DISCLOSURE_IA else ""))
+                vid_s2 = subir_video(youtube, "short_2.mp4", t_short2, d_short2,
+                                     tags[:15] + ["shorts"],
+                                     utc_iso(slot_short2) if slot_short2 else None)
+                if not vid_s2:
+                    raise RuntimeError("subir_video no devolvió ID")
+                print(f"✅ Short 2 subido: https://youtu.be/{vid_s2}")
+                shorts_creados.append(("Short 2", vid_s2))
         except Exception as e:
             print(f"❌ Short 2 FALLÓ: {type(e).__name__}: {e}")
             traceback.print_exc()
