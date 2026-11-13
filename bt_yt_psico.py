@@ -69,7 +69,14 @@ PROB_VIDEO = {"gancho": 0.7, "contexto": 0.6, "desarrollo": 0.5, "conclusion": 0
 
 FUENTE_URL = "https://raw.githubusercontent.com/google/fonts/main/ofl/anton/Anton-Regular.ttf"
 # NOTA: Renombra tus archivos MP3 actuales a estos nombres o actualiza esta lista con tus nombres actuales
-FONDOS_DISPONIBLES = ["Deep_Focus.mp3", "Cinematic_Ambient.mp3", "Minimalist_Piano.mp3", "Subtle_Tension.mp3", "Thoughtful_Moment.mp3"]
+FONDOS_DISPONIBLES = [
+    "Astral Alignment.mp3",
+    "Astral Zenith.mp3",
+    "Celestial Drift.mp3",
+    "Celestial Drift (1).mp3",
+    "Sylvan Sanctuary.mp3",
+    "Verdant Stream.mp3"
+]
 ESTILO_CANAL = "minimalist dark aesthetic, cinematic lighting, professional photography, 8k quality, moody atmosphere, sharp focus"
 
 # =================================================================
